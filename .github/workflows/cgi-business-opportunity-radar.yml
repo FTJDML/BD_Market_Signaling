@@ -1,48 +1,60 @@
-name: CGI Retail IT Signal Radar V10 People Watchlist
+name: CGI Retail IT Signal Radar V11 UX Recall LinkedIn Watchlist
 
 on:
   workflow_dispatch:
     inputs:
       lookback_days:
-        description: "Freshness window voor directe IT-signalen in dagen"
+        description: "Freshness window voor directe IT-vacatures in dagen"
         required: false
         default: "45"
       integration_lookback_days:
         description: "Freshness window voor gekwalificeerde M&A/formule-integratie"
         required: false
-        default: "120"
+        default: "180"
+      leadership_lookback_days:
+        description: "Shelf-life voor CIO/CTO/CDO/Head of Data-signalen"
+        required: false
+        default: "210"
+      program_lookback_days:
+        description: "Shelf-life voor platform/POS/ERP/data/cloud-programma's"
+        required: false
+        default: "180"
+      job_lookback_days:
+        description: "Shelf-life voor concrete IT-vacatures"
+        required: false
+        default: "45"
       min_score:
         description: "Minimumscore voor publicatie"
         required: false
         default: "80"
       deep_scan_mode:
-        description: "broad, broad_plus_rotating, all. Gebruik all alleen met API budget."
+        description: "broad, broad_plus_rotating, all"
         required: false
         default: "broad_plus_rotating"
       max_company_deep_scans:
-        description: "Aantal company-specific deep scans per run bij rotating"
+        description: "Aantal company-specific deep scans per run"
         required: false
-        default: "80"
+        default: "100"
       max_queries:
-        description: "Hard maximum aantal zoekqueries per run"
+        description: "Hard maximum aantal zoekqueries per run. Hoog gezet zodat LinkedIn URL-watchlist echt ruimte krijgt."
         required: false
-        default: "260"
+        default: "2200"
       max_results_per_query:
         description: "Max resultaten per query/provider"
         required: false
         default: "10"
       include_linkedin_public_index:
-        description: "Publieke LinkedIn zoekindex gebruiken via search APIs. Geen LinkedIn scraping."
+        description: "Extra publieke LinkedIn company/post indexqueries. Watchlist URL scans staan hier los van."
         required: false
         default: "false"
       people_watchlist_mode:
-        description: "off, rotating, all. Bepaalt of data/people-watchlist.csv/txt/urls.txt wordt gebruikt voor people-first onderzoek."
+        description: "off, rotating, all. all = alle URL's uit data/people-watchlist.csv proberen te scannen binnen querybudget."
         required: false
-        default: "rotating"
+        default: "all"
       max_people_watchlist_scans:
-        description: "Aantal LinkedIn watchlist-profielen dat per run via publieke search-index wordt verrijkt/gecheckt. Gebruik ALL alleen met API-budget."
+        description: "Aantal LinkedIn watchlist-profielen per run. Gebruik ALL voor alle URL's."
         required: false
-        default: "120"
+        default: "ALL"
   schedule:
     - cron: "17 5 * * *"
 
@@ -52,7 +64,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: cgi-retail-it-signal-radar-v10
+  group: cgi-retail-it-signal-radar-v11
   cancel-in-progress: true
 
 jobs:
@@ -63,15 +75,18 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     env:
       LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days || '45' }}
-      INTEGRATION_LOOKBACK_DAYS: ${{ github.event.inputs.integration_lookback_days || '120' }}
+      INTEGRATION_LOOKBACK_DAYS: ${{ github.event.inputs.integration_lookback_days || '180' }}
+      LEADERSHIP_LOOKBACK_DAYS: ${{ github.event.inputs.leadership_lookback_days || '210' }}
+      PROGRAM_LOOKBACK_DAYS: ${{ github.event.inputs.program_lookback_days || '180' }}
+      JOB_LOOKBACK_DAYS: ${{ github.event.inputs.job_lookback_days || '45' }}
       MIN_SCORE: ${{ github.event.inputs.min_score || '80' }}
       DEEP_SCAN_MODE: ${{ github.event.inputs.deep_scan_mode || 'broad_plus_rotating' }}
-      MAX_COMPANY_DEEP_SCANS: ${{ github.event.inputs.max_company_deep_scans || '80' }}
-      MAX_QUERIES: ${{ github.event.inputs.max_queries || '260' }}
+      MAX_COMPANY_DEEP_SCANS: ${{ github.event.inputs.max_company_deep_scans || '100' }}
+      MAX_QUERIES: ${{ github.event.inputs.max_queries || '2200' }}
       MAX_RESULTS_PER_QUERY: ${{ github.event.inputs.max_results_per_query || '10' }}
       ENABLE_LINKEDIN_PUBLIC_INDEX: ${{ github.event.inputs.include_linkedin_public_index || 'false' }}
-      PEOPLE_WATCHLIST_MODE: ${{ github.event.inputs.people_watchlist_mode || 'rotating' }}
-      MAX_PEOPLE_WATCHLIST_SCANS: ${{ github.event.inputs.max_people_watchlist_scans || '120' }}
+      PEOPLE_WATCHLIST_MODE: ${{ github.event.inputs.people_watchlist_mode || 'all' }}
+      MAX_PEOPLE_WATCHLIST_SCANS: ${{ github.event.inputs.max_people_watchlist_scans || 'ALL' }}
       ENABLE_RSS_FALLBACK: "true"
       ENABLE_GDELT: "true"
       DISCOVER_PEOPLE: "true"
@@ -91,7 +106,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Write V10 radar application
+      - name: Write radar application
         shell: bash
         run: |
           cat > radar.py <<'PY'
@@ -106,7 +121,7 @@ jobs:
               ZoneInfo = None
           
           LOGIN_CODE = "BD_Signal_26!"
-          VERSION = "v10_people_watchlist_url_only_supported"
+          VERSION = "v11_recall_dedupe_linkedin_watchlist_ux"
           LOCAL_TZ = ZoneInfo("Europe/Amsterdam") if ZoneInfo else dt.timezone(dt.timedelta(hours=2), name="Europe/Amsterdam")
           NOW_UTC = dt.datetime.now(dt.timezone.utc)
           NOW_LOCAL = NOW_UTC.astimezone(LOCAL_TZ)
@@ -128,18 +143,24 @@ jobs:
               return val in {"1","true","yes","y","on"}
           
           LOOKBACK_DAYS = env_int("LOOKBACK_DAYS", 45)
-          INTEGRATION_LOOKBACK_DAYS = env_int("INTEGRATION_LOOKBACK_DAYS", 120)
+          INTEGRATION_LOOKBACK_DAYS = env_int("INTEGRATION_LOOKBACK_DAYS", 180)
+          LEADERSHIP_LOOKBACK_DAYS = env_int("LEADERSHIP_LOOKBACK_DAYS", 210)
+          PROGRAM_LOOKBACK_DAYS = env_int("PROGRAM_LOOKBACK_DAYS", 180)
+          JOB_LOOKBACK_DAYS = env_int("JOB_LOOKBACK_DAYS", LOOKBACK_DAYS)
+          SECURITY_LOOKBACK_DAYS = env_int("SECURITY_LOOKBACK_DAYS", 90)
+          TENDER_LOOKBACK_DAYS = env_int("TENDER_LOOKBACK_DAYS", 90)
+          SEARCH_LOOKBACK_DAYS = env_int("SEARCH_LOOKBACK_DAYS", max(INTEGRATION_LOOKBACK_DAYS, LEADERSHIP_LOOKBACK_DAYS, PROGRAM_LOOKBACK_DAYS, JOB_LOOKBACK_DAYS, SECURITY_LOOKBACK_DAYS, TENDER_LOOKBACK_DAYS))
           MIN_SCORE = env_int("MIN_SCORE", 80)
           MAX_RESULTS_PER_QUERY = env_int("MAX_RESULTS_PER_QUERY", 10)
-          MAX_QUERIES = env_int("MAX_QUERIES", 120)
+          MAX_QUERIES = env_int("MAX_QUERIES", 2200)
           DEEP_SCAN_MODE = env_str("DEEP_SCAN_MODE", "broad_plus_rotating")
           MAX_COMPANY_DEEP_SCANS = env_int("MAX_COMPANY_DEEP_SCANS", 80)
           ENABLE_RSS_FALLBACK = env_bool("ENABLE_RSS_FALLBACK", True)
           ENABLE_GDELT = env_bool("ENABLE_GDELT", True)
           ENABLE_LINKEDIN_PUBLIC_INDEX = env_bool("ENABLE_LINKEDIN_PUBLIC_INDEX", False)
           DISCOVER_PEOPLE = env_bool("DISCOVER_PEOPLE", True)
-          PEOPLE_WATCHLIST_MODE = env_str("PEOPLE_WATCHLIST_MODE", "rotating").lower()
-          MAX_PEOPLE_WATCHLIST_SCANS_RAW = env_str("MAX_PEOPLE_WATCHLIST_SCANS", "120")
+          PEOPLE_WATCHLIST_MODE = env_str("PEOPLE_WATCHLIST_MODE", "all").lower()
+          MAX_PEOPLE_WATCHLIST_SCANS_RAW = env_str("MAX_PEOPLE_WATCHLIST_SCANS", "ALL")
           MAX_PEOPLE_WATCHLIST_SCANS = 10**9 if MAX_PEOPLE_WATCHLIST_SCANS_RAW.upper() == "ALL" else int(MAX_PEOPLE_WATCHLIST_SCANS_RAW or "120")
           BRAVE_KEY = env_str("BRAVE_SEARCH_API_KEY")
           TAVILY_KEY = env_str("TAVILY_API_KEY")
@@ -215,6 +236,8 @@ jobs:
               "la place": ["La Place"],
               "the sting": ["The Sting", "Costes", "Cotton Club"],
               "roompot": ["Roompot", "Landal", "Landal GreenParks"],
+              "ek retail": ["EK Retail", "EK Retail Group", "EK Retail group"],
+              "united retail": ["United Retail", "Electro World", "EP:"],
           }
           
           QUERY_PACKS = [
@@ -252,6 +275,10 @@ jobs:
                   '"Head of Data" retailer benoemd',
                   '"CIO" retailer benoemd',
                   '"nieuwe CIO" winkelketen',
+                  '"CIO" "directie" retail benoemd',
+                  '"CIO" "directieteam" retail',
+                  '"versterkt directie" "CIO" retail',
+                  '"Chief Information Officer" retail aangesteld',
                   '"Head of Technology" retailer aangesteld',
                   '"IT Director" retailer benoemd',
               ]),
@@ -412,7 +439,7 @@ jobs:
               for a in accounts.values():
                   a['aliases'] = sorted([x for x in a['aliases'] if x and len(canonical_company_key(x) or x) >= 2], key=lambda s: (-len(s), s.lower()))
                   k = a['key']
-                  a['source_only'] = any(s == k or s in k or k in s for s in SOURCE_ONLY_NAMES)
+                  a['source_only'] = any(s == k or (len(s) >= 5 and s in k) or (len(k) >= 5 and k in s) for s in SOURCE_ONLY_NAMES)
               return list(accounts.values())
           
           ACCOUNTS = load_companies()
@@ -467,7 +494,7 @@ jobs:
           
           def google_news_rss(query_pack, query, kind):
               if not ENABLE_RSS_FALLBACK: return []
-              q = query + f' when:{max(1, min(max(LOOKBACK_DAYS, INTEGRATION_LOOKBACK_DAYS), 120))}d'
+              q = query + f' when:{max(1, min(SEARCH_LOOKBACK_DAYS, 240))}d'
               url = 'https://news.google.com/rss/search?' + urllib.parse.urlencode({'q': q, 'hl': 'nl', 'gl': 'NL', 'ceid': 'NL:nl'})
               xml = http_text(url)
               root = ET.fromstring(xml)
@@ -484,7 +511,7 @@ jobs:
           
           def gdelt_search(query_pack, query, kind):
               if not ENABLE_GDELT: return []
-              days = max(1, min(max(LOOKBACK_DAYS, INTEGRATION_LOOKBACK_DAYS), 90))
+              days = max(1, min(SEARCH_LOOKBACK_DAYS, 180))
               params = {'query': query, 'mode': 'ArtList', 'format': 'json', 'maxrecords': str(MAX_RESULTS_PER_QUERY), 'sort': 'HybridRel', 'timespan': f'{days}d'}
               url = 'https://api.gdeltproject.org/api/v2/doc/doc?' + urllib.parse.urlencode(params)
               data = http_json(url)
@@ -497,7 +524,7 @@ jobs:
               if not BRAVE_KEY: return []
               params = {'q': query, 'count': str(MAX_RESULTS_PER_QUERY), 'country': 'nl', 'search_lang': 'nl', 'safesearch': 'off'}
               # Brave accepts freshness on current API versions; if ignored by provider, local freshness gate still applies.
-              params['freshness'] = 'pm' if max(LOOKBACK_DAYS, INTEGRATION_LOOKBACK_DAYS) <= 31 else 'py'
+              params['freshness'] = 'py' if SEARCH_LOOKBACK_DAYS > 31 else 'pm'
               url = 'https://api.search.brave.com/res/v1/web/search?' + urllib.parse.urlencode(params)
               data = http_json(url, headers={'X-Subscription-Token': BRAVE_KEY, 'Accept': 'application/json'})
               out = []
@@ -680,24 +707,32 @@ jobs:
               return (watchlist + watchlist)[start:start+n]
           
           def build_people_watchlist_queries(watchlist):
+              """Build real search queries from LinkedIn watchlist URLs.
+          
+              This does not log in to LinkedIn. It treats every URL as a research seed and asks the configured
+              search APIs to find public profile/post/web evidence around that person. With only URL input the
+              agent infers a name from the slug; with company/role columns it can search far more precisely.
+              """
               queries = []
+              signal_terms = '("Business Analyst" OR "Business Analist" OR "data transformatie" OR "data transformation" OR "Product Owner POS" OR "ERP" OR "SAP S/4HANA" OR "data platform" OR "dataplatform" OR "POS" OR "omnichannel" OR "integratie" OR "hiring" OR "vacature")'
+              role_terms = '(CIO OR CTO OR "Chief Digital Officer" OR "Chief Data Officer" OR "Head of Data" OR "Head of Digital" OR "IT Director" OR "Enterprise Architect" OR "Product Owner POS" OR "Business Analyst" OR "Business Analist")'
               for p in selected_people_for_scan(watchlist):
                   name = (p.get('name') or '').strip()
                   company = (p.get('company') or '').strip()
                   slug = (p.get('slug') or '').strip()
                   url = (p.get('linkedin_url') or '').strip()
+                  company_part = f'"{company}" ' if company else ''
                   if slug:
-                      queries.append(('people-watchlist-enrichment', f'site:linkedin.com/in "{slug}"', 'people'))
+                      # Exact profile URL/slug query. This is the proof that the URL list is actually used as scan input.
+                      queries.append(('people-watchlist-profile-url', f'site:linkedin.com/in "{slug}" {role_terms}', 'people'))
                   if name:
-                      role_filter = '(CIO OR CTO OR "Head of Data" OR "Head of Digital" OR "IT Director" OR "Enterprise Architect" OR "Product Owner POS" OR "Business Analyst" OR "Business Analist")'
-                      company_part = f'"{company}" ' if company else ''
-                      queries.append(('people-watchlist-profile', f'site:linkedin.com/in "{name}" {company_part}{role_filter}', 'people'))
-                      queries.append(('people-watchlist-signals', f'"{name}" {company_part}("Business Analyst" OR "Business Analist" OR "data transformatie" OR "data transformation" OR "Product Owner POS" OR ERP OR "SAP S/4HANA" OR "data platform" OR POS OR omnichannel)', 'linkedin'))
-                      queries.append(('people-watchlist-posts', f'site:linkedin.com/posts "{name}" ("Business Analyst" OR "Business Analist" OR "data transformatie" OR "data transformation" OR "Product Owner POS" OR ERP OR "data platform" OR hiring)', 'linkedin'))
+                      # Concrete signal query around the person. Company is optional because the user may provide URL-only.
+                      queries.append(('people-watchlist-person-signal', f'"{name}" {company_part}{signal_terms}', 'linkedin'))
+                      # LinkedIn post index query. This catches public posts or repost snippets when indexed.
+                      queries.append(('people-watchlist-post-signal', f'site:linkedin.com/posts "{name}" {signal_terms}', 'linkedin'))
                   elif url:
-                      queries.append(('people-watchlist-url', f'"{url}"', 'people'))
+                      queries.append(('people-watchlist-url-exact', f'"{url}" {signal_terms}', 'linkedin'))
               return queries
-          
           # ------------------------- Classification -------------------------
           def source_type(x):
               d = domain_of(x.get('url'))
@@ -739,6 +774,41 @@ jobs:
               if not has_any(text, SCALE_TERMS): return False
               return True
           
+          
+          
+          def freshness_limit_for_text(text, stype):
+              """Category-aware shelf life. Prevents old archive items, but keeps still-relevant CIO/platform/integration signals."""
+              is_job = has_any(text, IT_ROLES) and has_any(text, JOB_TERMS)
+              is_leadership = has_any(text, LEADERSHIP_ROLES) and has_any(text, LEADERSHIP_EVENTS)
+              is_tender = has_any(text, TENDER_TERMS) and (has_any(text, IT_LANDSCAPE_TERMS) or has_any(text, IT_ROLES))
+              is_security = has_any(text, SECURITY_TERMS) and not (matched_terms(text, SECURITY_TERMS) == ['iam'])
+              is_program = has_any(text, IT_LANDSCAPE_TERMS) and has_any(text, CHANGE_TERMS)
+              is_ma = is_qualified_ma(text)
+              if stype in {'manual_feed','linkedin_signal_feed','linkedin_remote_feed'}:
+                  return max(LEADERSHIP_LOOKBACK_DAYS, PROGRAM_LOOKBACK_DAYS, INTEGRATION_LOOKBACK_DAYS)
+              if is_job:
+                  return JOB_LOOKBACK_DAYS
+              if is_leadership:
+                  return LEADERSHIP_LOOKBACK_DAYS
+              if is_tender:
+                  return TENDER_LOOKBACK_DAYS
+              if is_security:
+                  return SECURITY_LOOKBACK_DAYS
+              if is_program:
+                  return PROGRAM_LOOKBACK_DAYS
+              if is_ma:
+                  return INTEGRATION_LOOKBACK_DAYS
+              return LOOKBACK_DAYS
+          
+          def signal_freshness_label(category):
+              if category == 'IT/Digital leadership change': return f'{LEADERSHIP_LOOKBACK_DAYS}d leadership shelf-life'
+              if category == 'Gekwalificeerde formule-/ketenintegratie': return f'{INTEGRATION_LOOKBACK_DAYS}d integration shelf-life'
+              if category == 'Expliciete IT-landschap verandering': return f'{PROGRAM_LOOKBACK_DAYS}d program shelf-life'
+              if category == 'IT-vacature / capability demand': return f'{JOB_LOOKBACK_DAYS}d job shelf-life'
+              if category == 'IT-tender / RFP': return f'{TENDER_LOOKBACK_DAYS}d tender shelf-life'
+              if category == 'Security / compliance IT-event': return f'{SECURITY_LOOKBACK_DAYS}d security shelf-life'
+              return f'{LOOKBACK_DAYS}d default shelf-life'
+          
           def classify_item(x):
               text = compact_spaces(' '.join([x.get('title',''), x.get('snippet',''), x.get('source','')]))
               stype = source_type(x)
@@ -755,8 +825,10 @@ jobs:
               elif not matches: reject = 'no target-company match'
               elif all(m.get('source_only') for m in matches): reject = 'matched only source/vendor/manufacturer account, not a retail/consumer-services target'
           
-              # Freshness: hard gate. Jobs can be undated only if from job/career source and specific IT role is present.
+              # Freshness: category-aware hard gate. A CIO appointment is actionable longer than a job post,
+              # while 2018/2022 archive articles remain blocked.
               is_job_candidate = has_any(text, IT_ROLES) and has_any(text, JOB_TERMS)
+              max_age_for_item = freshness_limit_for_text(text, stype)
               if not reject:
                   if x_age is None:
                       if stype in {'manual_feed','linkedin_signal_feed','linkedin_remote_feed'}:
@@ -766,9 +838,8 @@ jobs:
                       else:
                           reject = 'undated result; cannot prove it is current'
                   else:
-                      max_age = INTEGRATION_LOOKBACK_DAYS if is_qualified_ma(text) else LOOKBACK_DAYS
-                      if x_age > max_age:
-                          reject = f'stale result ({x_age} days old; max {max_age})'
+                      if x_age > max_age_for_item:
+                          reject = f'stale result ({x_age} days old; max {max_age_for_item})'
           
               if reject:
                   return {'published': False, 'reason': reject, 'item': x, 'text': text, 'score': 0, 'category': 'Rejected'}
@@ -869,7 +940,7 @@ jobs:
                       'id': hashlib.sha1((norm_title(x.get('title','')) + '|' + category + '|' + '|'.join(m['key'] for m in matches)).encode('utf-8')).hexdigest()[:12],
                       'company': matches[0]['name'], 'matched_alias': matches[0]['alias'], 'all_matches': matches, 'title': x.get('title',''), 'url': x.get('url',''),
                       'source': x.get('source') or domain_of(x.get('url')), 'provider': x.get('provider'), 'source_type': stype, 'published_at': date_iso(x.get('published')),
-                      'age_days': x_age, 'category': category, 'directness': directness, 'score': score, 'priority': priority, 'confidence': confidence,
+                      'event_entities': event_entities_from_text(text, matches), 'age_days': x_age, 'category': category, 'directness': directness, 'shelf_life': signal_freshness_label(category), 'score': score, 'priority': priority, 'confidence': confidence,
                       'evidence_hits': list(dict.fromkeys(evidence))[:12], 'why': why, 'cgi_angle': cgi, 'action': action, 'query_pack': x.get('query_pack'), 'query': x.get('query'),
                       'outreach': make_outreach(matches[0]['name'], x.get('title',''), category, directness)
                   }
@@ -879,6 +950,37 @@ jobs:
               if directness == 'indirect':
                   return f"Ik zag een mogelijk integratiesignaal rond {company}: '{title}'. Ik zou dit niet als koopintentie behandelen, maar eerst valideren of POS, ERP, CRM, data, finance of integraties geraakt worden. Als dat zo is, kan CGI helpen met een compacte integratie-roadmap en delivery-aanpak."
               return f"Ik zag een concreet IT-landschap-signaal rond {company}: '{title}'. Dit valt onder {category}. CGI kan helpen met analyse, architectuur, integratie en delivery-capaciteit. Ik zou eerst kort valideren welk programma, team of hiring need hierachter zit."
+          
+          
+          
+          def event_entities_from_text(text, matches):
+              """Entities used for duplicate clustering. For M&A, multiple articles often mention only buyer or only target."""
+              keys = set(m.get('key') for m in matches or [] if m.get('key') and not m.get('source_only'))
+              lt = low(text)
+              # Strong brand anchors help collapse Ranzijn/Tuinland-like duplicate news bursts.
+              for alias, acc in ALIAS_INDEX:
+                  if acc.get('source_only'): continue
+                  if len(alias) < 4: continue
+                  if re.search(r'(?<![a-z0-9])' + re.escape(alias).replace('\\ ', r'\s+') + r'(?![a-z0-9])', lt, re.I):
+                      keys.add(acc['key'])
+              return sorted(keys)[:12]
+          
+          def days_between_signals(a, b):
+              da = parse_date(a.get('published_at'))
+              db = parse_date(b.get('published_at'))
+              if not da or not db:
+                  return 0
+              return abs((da - db).days)
+          
+          def should_merge_indirect(a, b):
+              if a.get('directness') != 'indirect' or b.get('directness') != 'indirect':
+                  return False
+              ea = set(a.get('event_entities') or [m.get('key') for m in a.get('all_matches', [])])
+              eb = set(b.get('event_entities') or [m.get('key') for m in b.get('all_matches', [])])
+              if not ea or not eb or not (ea & eb):
+                  return False
+              # News bursts around the same integration event usually cluster within a month.
+              return days_between_signals(a, b) <= 45
           
           # ------------------------- Research execution -------------------------
           def build_queries(watchlist=None):
@@ -892,7 +994,7 @@ jobs:
               # Reserve part of the query budget for curated people-watchlist research.
               # Otherwise a broad/company scan can push all people queries out of the MAX_QUERIES cap.
               watchlist_queries = build_people_watchlist_queries(watchlist or []) if watchlist else []
-              watchlist_reserve = min(len(watchlist_queries), max(20, MAX_QUERIES // 3)) if watchlist_queries else 0
+              watchlist_reserve = min(len(watchlist_queries), max(100, int(MAX_QUERIES * 0.80))) if watchlist_queries else 0
               if DEEP_SCAN_MODE != 'broad':
                   # Rotate to keep daily cost manageable, while broad event queries still cover the full universe.
                   day = int(NOW_LOCAL.strftime('%j'))
@@ -925,13 +1027,16 @@ jobs:
           def run_research():
               watchlist = people_watchlist()
               watchlist_selected = selected_people_for_scan(watchlist)
-              coverage = {'version': VERSION, 'run_at': NOW_LOCAL.strftime('%Y-%m-%d %H:%M %Z'), 'lookback_days': LOOKBACK_DAYS, 'integration_lookback_days': INTEGRATION_LOOKBACK_DAYS, 'min_score': MIN_SCORE, 'accounts_loaded': len(ACCOUNTS), 'providers': {}, 'queries_executed': 0, 'items_retrieved': 0, 'provider_errors': [], 'people_watchlist_loaded': len(watchlist), 'people_watchlist_selected_for_scan': len(watchlist_selected), 'people_watchlist_needs_enrichment': sum(1 for p in watchlist if p.get('needs_enrichment')), 'config': {
+              coverage = {'version': VERSION, 'run_at': NOW_LOCAL.strftime('%Y-%m-%d %H:%M %Z'), 'lookback_days': LOOKBACK_DAYS, 'integration_lookback_days': INTEGRATION_LOOKBACK_DAYS, 'min_score': MIN_SCORE, 'accounts_loaded': len(ACCOUNTS), 'providers': {}, 'queries_executed': 0, 'items_retrieved': 0, 'provider_errors': [], 'people_watchlist_loaded': len(watchlist), 'people_watchlist_selected_for_scan': len(watchlist_selected), 'people_watchlist_needs_enrichment': sum(1 for p in watchlist if p.get('needs_enrichment')), 'people_watchlist_api_ready': bool(BRAVE_KEY or TAVILY_KEY), 'people_watchlist_queries_planned': len(build_people_watchlist_queries(watchlist)), 'people_watchlist_queries_executed': 0, 'people_watchlist_items_retrieved': 0, 'config': {
                   'brave': bool(BRAVE_KEY), 'tavily': bool(TAVILY_KEY), 'serpapi': bool(SERPAPI_KEY), 'rss_fallback': ENABLE_RSS_FALLBACK, 'gdelt': ENABLE_GDELT, 'linkedin_public_index': ENABLE_LINKEDIN_PUBLIC_INDEX, 'deep_scan_mode': DEEP_SCAN_MODE, 'people_watchlist_mode': PEOPLE_WATCHLIST_MODE, 'max_people_watchlist_scans': MAX_PEOPLE_WATCHLIST_SCANS_RAW
               }}
               all_items = []
               queries = build_queries(watchlist)
               for pack, q, kind in queries:
                   coverage['queries_executed'] += 1
+                  is_people_watchlist_query = str(pack).startswith('people-watchlist')
+                  if is_people_watchlist_query:
+                      coverage['people_watchlist_queries_executed'] = coverage.get('people_watchlist_queries_executed', 0) + 1
                   for fetcher in PROVIDERS:
                       # Avoid Google Jobs for non-job queries to control cost/noise.
                       if fetcher.__name__ == 'serpapi_jobs' and kind != 'job': continue
@@ -940,6 +1045,8 @@ jobs:
                       try:
                           got = fetcher(pack, q, kind)
                           all_items.extend(got)
+                          if is_people_watchlist_query:
+                              coverage['people_watchlist_items_retrieved'] = coverage.get('people_watchlist_items_retrieved', 0) + len(got)
                           coverage['providers'][fetcher.__name__] = coverage['providers'].get(fetcher.__name__, 0) + len(got)
                       except Exception as e:
                           coverage['provider_errors'].append({'provider': fetcher.__name__, 'query': q[:160], 'error': str(e)[:240]})
@@ -977,22 +1084,66 @@ jobs:
           
           def signal_cluster_key(s):
               companies = sorted([m['key'] for m in s.get('all_matches', []) if not m.get('source_only')]) or [canonical_company_key(s.get('company',''))]
-              if s.get('directness') == 'indirect' and len(companies) > 1:
-                  return 'ma|' + '|'.join(companies)
+              if s.get('directness') == 'indirect':
+                  # Initial key only; indirect events also use overlap merging below.
+                  ents = sorted(set(s.get('event_entities') or companies))
+                  month = (s.get('published_at') or 'unknown')[:7]
+                  return 'ma|' + '|'.join(ents[:4]) + '|' + month
               if s.get('category') == 'IT-vacature / capability demand':
                   return 'job|' + companies[0] + '|' + '|'.join(sorted([e for e in s.get('evidence_hits', []) if e in IT_ROLES])[:2])
+              if s.get('category') == 'IT/Digital leadership change':
+                  # One leadership event can be syndicated by multiple titles/sources; cluster by company + leadership roles + month.
+                  roles = '|'.join(sorted([e for e in s.get('evidence_hits', []) if e in LEADERSHIP_ROLES])[:3])
+                  month = (s.get('published_at') or 'unknown')[:7]
+                  return 'leadership|' + companies[0] + '|' + roles + '|' + month
               return s.get('category','') + '|' + companies[0] + '|' + norm_title(s.get('title',''))[:80]
+          
+          def merge_signal(existing, candidate):
+              winner = existing
+              loser = candidate
+              # Prefer higher score, then more recent, then richer title.
+              if (candidate.get('score',0), -(candidate.get('age_days') or 999), len(candidate.get('title',''))) > (existing.get('score',0), -(existing.get('age_days') or 999), len(existing.get('title',''))):
+                  winner, loser = candidate, existing
+                  winner.setdefault('supporting_sources', existing.get('supporting_sources', []))
+              winner.setdefault('supporting_sources', [])
+              loser_src = {'title': loser.get('title'), 'url': loser.get('url'), 'source': loser.get('source'), 'published_at': loser.get('published_at')}
+              if loser_src not in winner['supporting_sources']:
+                  winner['supporting_sources'].append(loser_src)
+              # Merge event entities and all matches for display/dedupe traceability.
+              ents = sorted(set(winner.get('event_entities', [])) | set(loser.get('event_entities', [])))
+              winner['event_entities'] = ents
+              seen = {m.get('key') for m in winner.get('all_matches', [])}
+              for m in loser.get('all_matches', []):
+                  if m.get('key') not in seen:
+                      winner.setdefault('all_matches', []).append(m); seen.add(m.get('key'))
+              winner['supporting_count'] = len(winner.get('supporting_sources', []))
+              return winner
           
           def dedupe_signals(signals):
               grouped = {}
+              indirect_clusters = []
               for s in signals:
+                  if s.get('directness') == 'indirect':
+                      merged = False
+                      for i, existing in enumerate(indirect_clusters):
+                          if should_merge_indirect(existing, s):
+                              indirect_clusters[i] = merge_signal(existing, s)
+                              merged = True
+                              break
+                      if not merged:
+                          s = dict(s)
+                          s.setdefault('supporting_sources', [])
+                          s['supporting_count'] = 0
+                          indirect_clusters.append(s)
+                      continue
                   k = signal_cluster_key(s)
-                  if k not in grouped or (s['score'], -(s['age_days'] or 999)) > (grouped[k]['score'], -(grouped[k]['age_days'] or 999)):
+                  if k not in grouped:
                       grouped[k] = dict(s)
-                      grouped[k]['supporting_sources'] = []
+                      grouped[k].setdefault('supporting_sources', [])
+                      grouped[k]['supporting_count'] = 0
                   else:
-                      grouped[k].setdefault('supporting_sources', []).append({'title': s.get('title'), 'url': s.get('url'), 'source': s.get('source'), 'published_at': s.get('published_at')})
-              return list(grouped.values())
+                      grouped[k] = merge_signal(grouped[k], s)
+              return list(grouped.values()) + indirect_clusters
           
           # ------------------------- Self-test -------------------------
           def self_test():
@@ -1004,6 +1155,7 @@ jobs:
                   (item('test','test','x','web','Sonos speakers, soundbars en soundbases | MediaMarkt','https://www.mediamarkt.nl/nl/category/sonos','Een nieuw Sonos product kopen bij MediaMarkt', 'MediaMarkt', NOW_UTC), False, 'product'),
                   (item('test','test','x','web','Ter Overname: Bruna winkel in Vlissingen | Franchise+','https://franchiseplus.nl/bruna-vlissingen','Ter Overname: Bruna winkel in Vlissingen', 'Franchise+', NOW_UTC), False, 'single-store'),
                   (item('test','test','x','web','Louwman CEO vertrekt na drie jaar','https://automotive-online.nl/louwman-ceo','Paul de Krom vertrekt na drie jaar als ceo van Louwman Group', 'Automotive Online', NOW_UTC), False, 'ceo-only'),
+                  (item('test','test','x','web','Nieuwe structuur directieteam EK Retail: Duijst benoemd tot CEO, Klercq versterkt directie als CIO - Wonen360','https://www.wonen360.nl/article/ek-retail-cio','EK Retail versterkt directie als CIO benoemd', 'Wonen360', 'Mon, 09 Feb 2026 08:00:00 GMT'), True, 'ek leadership retained'),
                   (item('test','test','x','web','Ranzijn Tuin & Dier neemt alle 4 winkels van Tuinland over','https://retailtrends.nl/ranzijn-tuinland','Ranzijn neemt alle winkels en vestigingen van Tuinland over', 'RetailTrends', NOW_UTC), True, 'qualified ma'),
                   (item('test','test','x','job','Intergamma zoekt Business Analist Data Transformatie','https://werkenbijintergamma.nl/vacature/business-analist-data-transformatie','Business Analist Data Transformatie vacature bij Intergamma voor dataplatform en ERP-integratie', 'Intergamma Careers', NOW_UTC), True, 'job'),
                   (item('test','test','x','web','Jumbo neemt La Place over','https://www.parool.nl/nieuws/jumbo-la-place','V&D-restaurant La Place overgenomen door Jumbo Groep', 'Parool', 'Tue, 26 Jan 2016 08:00:00 GMT'), False, 'stale ma'),
@@ -1015,6 +1167,20 @@ jobs:
                   ok = bool(res.get('published')) == should_publish
                   if not ok:
                       failures.append({'note': note, 'title': it['title'], 'expected': should_publish, 'got': res})
+              # Duplicate clustering: the Tuinland/Ranzijn news burst should collapse into one opportunity signal.
+              tuinland_items = [
+                  item('test','test','x','web','Ranzijn Tuin & Dier neemt alle 4 winkels van Tuinland over','https://retailtrends.nl/ranzijn-tuinland','Ranzijn neemt alle winkels en vestigingen van Tuinland over', 'RetailTrends', 'Mon, 11 May 2026 07:00:00 GMT'),
+                  item('test','test','x','web','Tuinland verkoopt alle vestigingen aan Ranzijn, hoofdkantoor in Assen sluit','https://rtvdrenthe.nl/tuinland-ranzijn','Tuinland verkoopt alle vestigingen aan Ranzijn', 'RTV Drenthe', 'Fri, 08 May 2026 07:00:00 GMT'),
+                  item('test','test','x','web','Overname Noord-Nederlandse keten Tuinland','https://wonen360.nl/tuinland','Overname keten Tuinland', 'Wonen360', 'Mon, 11 May 2026 07:00:00 GMT'),
+              ]
+              tuinland_signals = []
+              for it in tuinland_items:
+                  res = classify_item(it)
+                  if res.get('published'):
+                      tuinland_signals.append(res['signal'])
+              deduped_tuinland = dedupe_signals(tuinland_signals)
+              if len(deduped_tuinland) != 1:
+                  failures.append({'note': 'dedupe tuinland burst', 'expected': 1, 'got': len(deduped_tuinland)})
               if failures:
                   print(json.dumps(failures, ensure_ascii=False, indent=2))
                   raise SystemExit('Self-test failed')
@@ -1024,35 +1190,41 @@ jobs:
           def render_html(data):
               data_json = json.dumps(data, ensure_ascii=False).replace('</', '<\\/')
               css = """
-              :root{--cgi-red:#e31937;--cgi-purple:#5236ab;--cgi-black:#000;--cgi-white:#fff;--gray:#f4f4f6;--line:#dedee8;--text:#111;--muted:#666;}
-              *{box-sizing:border-box} body{margin:0;font-family:Arial,Helvetica,sans-serif;color:var(--text);background:#fff;} .login{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#e31937 0%,#a82465 45%,#5236ab 100%);padding:24px}.login-card{width:min(520px,100%);background:#fff;border-radius:24px;padding:32px;box-shadow:0 24px 70px rgba(0,0,0,.25)}.brand{font-size:14px;letter-spacing:.12em;text-transform:uppercase;font-weight:800;color:#5236ab}.login h1{margin:10px 0 8px;font-size:28px}.login input{width:100%;font-size:18px;padding:14px;border:1px solid #ccc;border-radius:10px;margin-top:16px}.btn{background:#e31937;color:#fff;border:0;border-radius:10px;padding:12px 16px;font-weight:800;cursor:pointer}.login .btn{width:100%;margin-top:12px}.err{color:#e31937;font-weight:700;margin-top:10px;min-height:20px}.app{display:none}.top{background:#000;color:#fff;padding:22px 28px;border-bottom:6px solid #e31937}.top h1{margin:0;font-size:28px}.top p{margin:6px 0 0;color:#ddd}.stats{display:grid;grid-template-columns:repeat(6,minmax(130px,1fr));gap:12px;padding:18px 28px;background:#f8f8fa}.stat{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px}.stat b{display:block;font-size:26px;color:#5236ab}.tabs{display:flex;gap:8px;padding:0 28px 18px;background:#f8f8fa;flex-wrap:wrap}.tab{border:1px solid var(--line);background:#fff;border-radius:999px;padding:10px 14px;cursor:pointer;font-weight:700}.tab.active{background:#5236ab;color:#fff}.wrap{padding:24px 28px}.controls{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px}.controls input,.controls select{padding:11px;border:1px solid #ccc;border-radius:10px;min-width:220px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}.card{border:1px solid var(--line);border-radius:18px;padding:18px;background:#fff;box-shadow:0 8px 28px rgba(0,0,0,.04)}.card h3{margin:0 0 8px}.pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:800;margin:2px}.direct{background:#ffe8ec;color:#a30017}.indirect{background:#eee9ff;color:#32177f}.score{float:right;background:#000;color:#fff;border-radius:999px;padding:8px 11px;font-weight:900}.meta{font-size:13px;color:#666;margin:8px 0}.section-title{font-size:12px;font-weight:900;color:#5236ab;text-transform:uppercase;letter-spacing:.08em;margin-top:14px}.small{font-size:13px;color:#555}.empty{border:2px dashed #ddd;border-radius:18px;padding:24px;background:#fafafa}.source{font-size:12px;color:#666}.reject{border-left:5px solid #999}.archive{opacity:.8}.table{width:100%;border-collapse:collapse}.table th,.table td{border-bottom:1px solid #eee;text-align:left;padding:10px;font-size:14px;vertical-align:top}.table th{font-size:12px;text-transform:uppercase;color:#5236ab}.link{color:#5236ab;font-weight:800;text-decoration:none}.warn{background:#fff4e5;border:1px solid #ffd18a;border-radius:14px;padding:14px;margin-bottom:16px}.ok{background:#eefaf0;border:1px solid #b9e5c0;border-radius:14px;padding:14px;margin-bottom:16px}@media(max-width:900px){.stats{grid-template-columns:repeat(2,1fr)}.top,.wrap,.stats,.tabs{padding-left:16px;padding-right:16px}}
+              :root{--red:#e31937;--purple:#5236ab;--black:#000;--white:#fff;--bg:#f6f6f8;--card:#fff;--line:#e3e3ea;--text:#111;--muted:#62626f;--soft-red:#fff0f2;--soft-purple:#f1edff;--shadow:0 16px 45px rgba(0,0,0,.08)}
+              *{box-sizing:border-box} body{margin:0;font-family:Inter,Arial,Helvetica,sans-serif;background:var(--bg);color:var(--text)}
+              .login{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#e31937 0%,#a82465 48%,#5236ab 100%);padding:28px}.login-card{width:min(560px,100%);background:#fff;border-radius:28px;padding:34px;box-shadow:0 32px 90px rgba(0,0,0,.28)}.eyebrow{letter-spacing:.12em;text-transform:uppercase;font-size:12px;font-weight:900;color:var(--purple)}.login h1{font-size:34px;margin:10px 0 8px;line-height:1}.login p{color:#555;line-height:1.45}.login input{width:100%;font-size:18px;padding:15px 16px;border:1px solid #cfcfd8;border-radius:14px;margin-top:18px}.btn{background:var(--red);color:#fff;border:0;border-radius:14px;padding:13px 18px;font-weight:900;cursor:pointer}.login .btn{width:100%;margin-top:12px}.err{color:var(--red);font-weight:800;margin-top:12px;min-height:20px}.app{display:none}
+              .hero{background:#000;color:#fff;padding:30px 32px 26px;position:relative;overflow:hidden}.hero:after{content:"";position:absolute;inset:auto -20% -120px 35%;height:260px;background:linear-gradient(135deg,#e31937,#a82465,#5236ab);filter:blur(5px);opacity:.95;border-radius:50%}.hero-inner{position:relative;z-index:1;display:flex;justify-content:space-between;gap:18px;align-items:flex-end}.hero h1{margin:6px 0 8px;font-size:38px;letter-spacing:-.03em}.hero p{margin:0;color:#ddd;max-width:900px}.runmeta{font-size:13px;color:#ddd;text-align:right;min-width:280px}.stats{display:grid;grid-template-columns:repeat(6,minmax(130px,1fr));gap:14px;margin:-22px 28px 0;position:relative;z-index:3}.stat{background:#fff;border:1px solid var(--line);border-radius:18px;padding:16px;box-shadow:var(--shadow)}.stat b{display:block;font-size:30px;color:var(--purple);letter-spacing:-.03em}.stat span{font-size:12px;text-transform:uppercase;letter-spacing:.07em;font-weight:900;color:#666}.nav{display:flex;gap:8px;padding:20px 28px 0;flex-wrap:wrap}.tab{border:1px solid var(--line);background:#fff;border-radius:999px;padding:10px 15px;cursor:pointer;font-weight:900;color:#333}.tab.active{background:var(--purple);color:#fff;border-color:var(--purple)}.wrap{padding:22px 28px 36px}.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px}.toolbar input,.toolbar select{padding:13px 14px;border:1px solid #ccc;border-radius:12px;background:#fff;min-width:220px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:18px}.card{background:#fff;border:1px solid var(--line);border-radius:22px;padding:18px;box-shadow:0 10px 30px rgba(0,0,0,.05)}.signal{position:relative;overflow:hidden}.signal:before{content:"";position:absolute;left:0;top:0;bottom:0;width:6px;background:var(--red)}.signal.indirect-card:before{background:var(--purple)}.card h3{font-size:19px;line-height:1.25;margin:10px 70px 8px 0}.score{position:absolute;right:16px;top:16px;background:#000;color:#fff;border-radius:16px;padding:10px 12px;font-weight:950;font-size:18px}.pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:900;margin:2px}.pill.direct{background:var(--soft-red);color:#a30017}.pill.indirect{background:var(--soft-purple);color:#32177f}.pill.neutral{background:#f0f0f3;color:#444}.meta{font-size:13px;color:#666;margin:8px 0}.section-title{font-size:11px;font-weight:950;color:var(--purple);text-transform:uppercase;letter-spacing:.09em;margin-top:14px}.small{font-size:13px;color:#444;line-height:1.45}.link{color:var(--purple);font-weight:900;text-decoration:none}.empty{background:#fff;border:2px dashed #d7d7df;border-radius:22px;padding:30px;text-align:center;color:#555}.table{width:100%;border-collapse:collapse;background:#fff;border-radius:18px;overflow:hidden}.table th,.table td{border-bottom:1px solid #eee;text-align:left;padding:12px;font-size:14px;vertical-align:top}.table th{font-size:11px;text-transform:uppercase;color:var(--purple);letter-spacing:.08em}.callout{border-radius:18px;padding:16px;margin-bottom:16px;border:1px solid #ddd;background:#fff}.callout.ok{background:#eefaf1;border-color:#bfe7c5}.callout.warn{background:#fff6e6;border-color:#ffd28a}.callout strong{display:block;margin-bottom:4px}.split{display:grid;grid-template-columns:1.1fr .9fr;gap:18px}.source-list{margin:8px 0 0;padding-left:18px}.source-list li{margin:5px 0;font-size:12px;color:#555}.quality{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:18px}.quality .mini{background:#fff;border:1px solid var(--line);border-radius:18px;padding:14px}.mini b{font-size:22px;color:var(--red)}pre{background:#111;color:#fff;padding:14px;border-radius:14px;overflow:auto}@media(max-width:900px){.hero-inner{display:block}.runmeta{text-align:left;margin-top:12px}.stats{grid-template-columns:repeat(2,1fr);margin-left:16px;margin-right:16px}.wrap,.nav,.hero{padding-left:16px;padding-right:16px}.split{grid-template-columns:1fr}}
               """
               js = """
               const LOGIN_CODE='BD_Signal_26!';
               const DATA=__DATA__;
-              function esc(s){return String(s??'').replace(/[&<>'\"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','\"':'&quot;'}[c];});}
-              function go(){const v=(document.getElementById('pw').value||'').trim(); if(v===LOGIN_CODE || v==='BD_Signal_26'){sessionStorage.setItem('bd_signal_login','1'); showApp();} else {document.getElementById('err').textContent='Code klopt niet. Gebruik exact: BD_Signal_26!';}}
+              function esc(s){return String(s??'').replace(/[&<>'\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','\"':'&quot;'}[c]));}
+              function go(){const v=(document.getElementById('pw').value||'').trim(); if(v===LOGIN_CODE || v==='BD_Signal_26'){sessionStorage.setItem('bd_signal_login','1'); showApp();} else document.getElementById('err').textContent='Code klopt niet. Gebruik exact: BD_Signal_26!';}
               function showApp(){document.querySelector('.login').style.display='none';document.querySelector('.app').style.display='block';render();}
               window.addEventListener('DOMContentLoaded',()=>{const p=new URLSearchParams(location.search); if(p.get('code')===LOGIN_CODE){sessionStorage.setItem('bd_signal_login','1'); history.replaceState(null,'',location.pathname);} if(sessionStorage.getItem('bd_signal_login')==='1') showApp(); document.getElementById('pw').addEventListener('keydown',e=>{if(e.key==='Enter')go();});});
               let current='signals';
               function tab(name){current=name;document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));render();}
               function filters(){return {q:(document.getElementById('q')?.value||'').toLowerCase(),cat:(document.getElementById('cat')?.value||'all'),dir:(document.getElementById('dir')?.value||'all')};}
-              function render(){if(!document.querySelector('.app').style.display.includes('block')) return; const c=DATA.coverage||{}; document.getElementById('stats').innerHTML=`<div class="stat"><b>${DATA.signals.length}</b>Signalen</div><div class="stat"><b>${c.queries_executed||0}</b>Queries</div><div class="stat"><b>${c.items_retrieved||0}</b>Items gezien</div><div class="stat"><b>${c.items_after_dedupe||0}</b>Na dedupe</div><div class="stat"><b>${c.rejected_count||0}</b>Afgewezen</div><div class="stat"><b>${c.accounts_loaded||0}</b>Accounts</div>`; document.getElementById('runmeta').textContent=`${c.version||''} · laatste run ${c.run_at||''} · lookback ${c.lookback_days||''}d · integratie ${c.integration_lookback_days||''}d · drempel ${c.min_score||''}`; if(current==='signals') renderSignals(); if(current==='coverage') renderCoverage(); if(current==='rejected') renderRejected(); if(current==='people') renderPeople(); if(current==='setup') renderSetup();}
-              function renderSignals(){const f=filters();let sig=DATA.signals.filter(s=>{let hay=(s.company+' '+s.title+' '+s.category+' '+s.evidence_hits.join(' ')).toLowerCase();return (!f.q||hay.includes(f.q))&&(f.cat==='all'||s.category===f.cat)&&(f.dir==='all'||s.directness===f.dir);}); let cats=[...new Set(DATA.signals.map(s=>s.category))].sort(); document.getElementById('content').innerHTML=`<div class="controls"><input id="q" placeholder="Zoek bedrijf, titel, bewijs..." value="${esc(f.q)}" oninput="renderSignals()"><select id="cat" onchange="renderSignals()"><option value="all">Alle categorieën</option>${cats.map(c=>`<option ${f.cat===c?'selected':''}>${esc(c)}</option>`).join('')}</select><select id="dir" onchange="renderSignals()"><option value="all">Direct + indirect</option><option value="direct" ${f.dir==='direct'?'selected':''}>Alleen direct</option><option value="indirect" ${f.dir==='indirect'?'selected':''}>Alleen indirect</option></select></div>` + (sig.length? '<div class="grid">'+sig.map(card).join('')+'</div>':'<div class="empty"><b>Geen publiceerbare signalen.</b><br>Dat is alleen goed als Coverage laat zien dat bronnen wél zijn doorzocht. Check de tab Coverage.</div>');}
-              function card(s){return `<div class="card"><div class="score">${s.score}</div><span class="pill ${s.directness}">${esc(s.directness)}</span><span class="pill">${esc(s.priority)}</span><h3>${esc(s.company)} — ${esc(s.title)}</h3><div class="meta">${esc(s.source_type)} · ${esc(s.source)} · ${esc(s.published_at)} · leeftijd: ${s.age_days??'onbekend'} dagen</div><div class="source">Matched alias: ${esc(s.matched_alias)} · Provider: ${esc(s.provider)} · Querypack: ${esc(s.query_pack)}</div><div class="section-title">Bewijs</div><div>${(s.evidence_hits||[]).map(e=>'<span class="pill">'+esc(e)+'</span>').join('')}</div><div class="section-title">Waarom</div><div class="small">${esc(s.why)}</div><div class="section-title">CGI-angle</div><div class="small">${esc(s.cgi_angle)}</div><div class="section-title">Actie</div><div class="small">${esc(s.action)}</div><div class="section-title">Outreach draft</div><div class="small">${esc(s.outreach)}</div><div style="margin-top:12px"><a class="link" target="_blank" href="${esc(s.url)}">Open bron</a></div></div>`;}
-              function renderCoverage(){const c=DATA.coverage||{}; const providers=c.providers||{}; const cfg=c.config||{}; document.getElementById('content').innerHTML=`<div class="warn"><b>Belangrijk:</b> oude bronnen worden nu hard geblokkeerd. Een item uit 2018/2022 mag alleen nog in Afgewezen/Archive staan, nooit als sales-signaal.</div><div class="grid"><div class="card"><h3>Providerdekking</h3><table class="table"><tbody>${Object.entries(providers).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join('')}</tbody></table></div><div class="card"><h3>Config</h3><table class="table"><tbody>${Object.entries(cfg).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')}</tbody></table></div><div class="card"><h3>Reject reasons</h3><table class="table"><tbody>${(c.reject_reasons||[]).map(r=>`<tr><td>${esc(r[0])}</td><td>${r[1]}</td></tr>`).join('')}</tbody></table></div><div class="card"><h3>Provider errors</h3><table class="table"><tbody>${(c.provider_errors||[]).slice(0,20).map(e=>`<tr><td>${esc(e.provider)}</td><td>${esc(e.error)}</td></tr>`).join('')||'<tr><td>Geen</td><td></td></tr>'}</tbody></table></div></div>`;}
-              function renderRejected(){document.getElementById('content').innerHTML=`<table class="table"><thead><tr><th>Titel</th><th>Bron</th><th>Datum</th><th>Reden</th><th>Query</th></tr></thead><tbody>${DATA.rejected.map(r=>`<tr class="reject"><td>${esc(r.title)}</td><td>${esc(r.source)}<br><a class="link" href="${esc(r.url)}" target="_blank">open</a></td><td>${esc(r.published_at)}<br>${r.age_days??'?' } dagen</td><td>${esc(r.reason)}</td><td>${esc(r.query_pack)}<br><span class="small">${esc(r.query)}</span></td></tr>`).join('')}</tbody></table>`;}
-              function renderPeople(){document.getElementById('content').innerHTML=`<div class="warn"><b>LinkedIn:</b> dit dashboard claimt niet dat alle profielen worden gescand. Het verwerkt publieke zoekindexresultaten en je eigen watchlist/feed. Voor volledige Sales Navigator-dekking moet je data/linkedin-signals.csv of een goedgekeurde feed vullen.</div><h3>People candidates uit publieke index</h3><table class="table"><tbody>${DATA.people.map(p=>`<tr><td>${esc(p.title)}</td><td>${esc(p.source)}<br><a class="link" href="${esc(p.url)}" target="_blank">open</a></td><td>${esc((p.matched_companies||[]).map(m=>m.name).join(', '))}</td></tr>`).join('')||'<tr><td>Geen people candidates gevonden.</td></tr>'}</tbody></table><h3>Watchlist uit data/people-watchlist.csv</h3><table class="table"><tbody>${DATA.watchlist.map(p=>`<tr><td>${esc(p.company||'')}</td><td>${esc(p.name||'')}</td><td>${esc(p.role||'')}</td><td><a class="link" href="${esc(p.linkedin_url||'')}" target="_blank">LinkedIn</a></td></tr>`).join('')||'<tr><td>Geen watchlistbestand gevonden.</td></tr>'}</tbody></table>`;}
-              function renderSetup(){document.getElementById('content').innerHTML=`<div class="card"><h3>Secrets voor echte internetdekking</h3><p>De radar werkt met gratis RSS/GDELT, maar wordt pas echt “Perplexity-achtig” met search API's.</p><pre>BRAVE_SEARCH_API_KEY
+              function render(){const c=DATA.coverage||{};document.getElementById('stats').innerHTML=`<div class="stat"><b>${DATA.signals.length}</b><span>signalen</span></div><div class="stat"><b>${c.queries_executed||0}</b><span>queries</span></div><div class="stat"><b>${c.items_retrieved||0}</b><span>items gezien</span></div><div class="stat"><b>${c.items_after_dedupe||0}</b><span>na dedupe</span></div><div class="stat"><b>${c.people_watchlist_loaded||0}</b><span>LinkedIn URL's</span></div><div class="stat"><b>${c.rejected_count||0}</b><span>afgewezen</span></div>`;document.getElementById('runmeta').textContent=`${c.version||''} · laatste run ${c.run_at||''} · drempel ${c.min_score||''}`; if(current==='signals')renderSignals(); if(current==='coverage')renderCoverage(); if(current==='rejected')renderRejected(); if(current==='people')renderPeople(); if(current==='setup')renderSetup();}
+              function renderSignals(){const f=filters();let sig=DATA.signals.filter(s=>{let hay=(s.company+' '+s.title+' '+s.category+' '+(s.evidence_hits||[]).join(' ')).toLowerCase();return(!f.q||hay.includes(f.q))&&(f.cat==='all'||s.category===f.cat)&&(f.dir==='all'||s.directness===f.dir)});let cats=[...new Set(DATA.signals.map(s=>s.category))].sort();document.getElementById('content').innerHTML=`<div class="quality"><div class="mini"><b>${DATA.signals.filter(s=>s.directness==='direct').length}</b><br>Directe IT-signalen</div><div class="mini"><b>${DATA.signals.filter(s=>s.directness==='indirect').length}</b><br>Integratie-hypotheses</div><div class="mini"><b>${DATA.signals.reduce((a,s)=>a+(s.supporting_count||0),0)}</b><br>Dubbele bronnen samengevoegd</div><div class="mini"><b>${(DATA.coverage||{}).people_watchlist_queries_executed||0}</b><br>LinkedIn watchlist queries</div></div><div class="toolbar"><input id="q" placeholder="Zoek bedrijf, titel, bewijs..." value="${esc(f.q)}" oninput="renderSignals()"><select id="cat" onchange="renderSignals()"><option value="all">Alle categorieën</option>${cats.map(c=>`<option ${f.cat===c?'selected':''}>${esc(c)}</option>`).join('')}</select><select id="dir" onchange="renderSignals()"><option value="all">Direct + indirect</option><option value="direct" ${f.dir==='direct'?'selected':''}>Alleen direct</option><option value="indirect" ${f.dir==='indirect'?'selected':''}>Alleen indirect</option></select></div>`+(sig.length?'<div class="grid">'+sig.map(card).join('')+'</div>':'<div class="empty"><b>Geen publiceerbare signalen.</b><br>Check Coverage om te zien of dit door brondekking of door filtering komt.</div>');}
+              function card(s){let supp=(s.supporting_sources||[]).slice(0,5).map(x=>`<li><a class="link" target="_blank" href="${esc(x.url)}">${esc(x.source||'bron')}</a> — ${esc(x.title||'')}</li>`).join('');return `<div class="card signal ${s.directness==='indirect'?'indirect-card':''}"><div class="score">${s.score}</div><span class="pill ${s.directness}">${esc(s.directness)}</span><span class="pill neutral">${esc(s.priority)}</span><span class="pill neutral">${esc(s.shelf_life||'')}</span><h3>${esc(s.company)} — ${esc(s.title)}</h3><div class="meta">${esc(s.source_type)} · ${esc(s.source)} · ${esc(s.published_at)} · ${s.age_days??'?'} dagen oud</div><div class="small">Matched alias: <b>${esc(s.matched_alias)}</b> · ${s.supporting_count?`+${s.supporting_count} vergelijkbare bronnen geclusterd`: 'unieke bron'}</div><div class="section-title">Bewijs</div><div>${(s.evidence_hits||[]).map(e=>'<span class="pill neutral">'+esc(e)+'</span>').join('')}</div><div class="section-title">Waarom relevant voor CGI</div><div class="small">${esc(s.why)}</div><div class="section-title">CGI-angle</div><div class="small">${esc(s.cgi_angle)}</div><div class="section-title">Actie</div><div class="small">${esc(s.action)}</div>${supp?`<div class="section-title">Samengevoegde bronnen</div><ul class="source-list">${supp}</ul>`:''}<div style="margin-top:14px"><a class="link" target="_blank" href="${esc(s.url)}">Open primaire bron</a></div></div>`;}
+              function renderCoverage(){const c=DATA.coverage||{}, providers=c.providers||{}, cfg=c.config||{};document.getElementById('content').innerHTML=`<div class="split"><div><div class="callout ok"><strong>Quality gates actief</strong>Oude archive-items, Wikipedia, productpagina's, folders, consumentencontent, financiële-only items en single-store overnames worden geblokkeerd. CIO/CTO/CDO-signalen hebben een langere shelf-life dan gewone nieuwsitems.</div><div class="card"><h3>Providerdekking</h3><table class="table"><tbody>${Object.entries(providers).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join('')}</tbody></table></div></div><div><div class="card"><h3>Config</h3><table class="table"><tbody>${Object.entries(cfg).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')}</tbody></table></div></div></div><div class="card" style="margin-top:18px"><h3>Waarom items zijn afgewezen</h3><table class="table"><tbody>${(c.reject_reasons||[]).map(r=>`<tr><td>${esc(r[0])}</td><td>${r[1]}</td></tr>`).join('')}</tbody></table></div>`;}
+              function renderRejected(){document.getElementById('content').innerHTML=`<table class="table"><thead><tr><th>Titel</th><th>Bron</th><th>Datum</th><th>Reden</th><th>Query</th></tr></thead><tbody>${DATA.rejected.map(r=>`<tr><td>${esc(r.title)}</td><td>${esc(r.source)}<br><a class="link" href="${esc(r.url)}" target="_blank">open</a></td><td>${esc(r.published_at)}<br>${r.age_days??'?'} dagen</td><td>${esc(r.reason)}</td><td>${esc(r.query_pack)}<br><span class="small">${esc(r.query)}</span></td></tr>`).join('')}</tbody></table>`;}
+              function renderPeople(){const c=DATA.coverage||{};let status=c.people_watchlist_api_ready?'ok':'warn';document.getElementById('content').innerHTML=`<div class="callout ${status}"><strong>LinkedIn URL watchlist scan</strong>${c.people_watchlist_api_ready?'De watchlist-URL’s worden in deze run als search-seeds gebruikt via Brave/Tavily.':'Er zijn LinkedIn URL’s ingelezen, maar zonder BRAVE_SEARCH_API_KEY of TAVILY_API_KEY kan GitHub Actions ze niet via websearch verrijken.'}</div><div class="quality"><div class="mini"><b>${c.people_watchlist_loaded||0}</b><br>URL’s ingelezen</div><div class="mini"><b>${c.people_watchlist_selected_for_scan||0}</b><br>profielen geselecteerd</div><div class="mini"><b>${c.people_watchlist_queries_planned||0}</b><br>queries gepland</div><div class="mini"><b>${c.people_watchlist_queries_executed||0}</b><br>queries uitgevoerd</div><div class="mini"><b>${c.people_watchlist_items_retrieved||0}</b><br>items opgehaald</div></div><h3>Watchlist geselecteerd voor deze run</h3><table class="table"><thead><tr><th>Naam</th><th>Bedrijf</th><th>Rol</th><th>LinkedIn</th><th>Status</th></tr></thead><tbody>${(DATA.watchlist_selected||[]).map(p=>`<tr><td>${esc(p.name||'')}</td><td>${esc(p.company||'')}</td><td>${esc(p.role||'')}</td><td><a class="link" href="${esc(p.linkedin_url||'')}" target="_blank">open</a></td><td>${p.needs_enrichment?'URL-only: naam/bedrijf/rol verrijken':'verrijkt'}</td></tr>`).join('')||'<tr><td>Geen profielen geselecteerd.</td></tr>'}</tbody></table><h3>People candidates uit publieke index</h3><table class="table"><tbody>${DATA.people.map(p=>`<tr><td>${esc(p.title)}</td><td>${esc(p.source)}<br><a class="link" href="${esc(p.url)}" target="_blank">open</a></td><td>${esc((p.role_hits||[]).join(', '))}</td><td>${esc((p.matched_companies||[]).map(m=>m.name).join(', '))}</td></tr>`).join('')||'<tr><td>Geen people candidates gevonden.</td></tr>'}</tbody></table>`;}
+              function renderSetup(){document.getElementById('content').innerHTML=`<div class="card"><h3>Aanbevolen setup voor optimale resultaten</h3><p>Gebruik minimaal Tavily of Brave voor people-watchlist scans; SerpAPI is vooral nuttig voor vacatures.</p><pre>BRAVE_SEARCH_API_KEY
           TAVILY_API_KEY
           SERPAPI_API_KEY
-          LINKEDIN_SIGNAL_FEED_URL</pre><h3>Bestanden die je kunt toevoegen</h3><pre>data/companies.txt              # extra accounts/aliases
-          data/people-watchlist.csv       # IT-beslissers. Mag ook alleen kolom 'Linkedin URL' bevatten
-          data/linkedin-signals.csv       # concrete LinkedIn-observaties
-          data/manual-signals.csv         # handmatig gevalideerde signalen</pre><h3>LinkedIn feed format</h3><pre>date,company,person,role,url,text
-          2026-06-16,HEMA,Naam,Head of Data,https://linkedin.com/posts/...,Post over data transformation en zoeken naar Business Analysts</pre></div>`;}
+          LINKEDIN_SIGNAL_FEED_URL</pre><h3>Workflow-instellingen</h3><pre>people_watchlist_mode = all
+          max_people_watchlist_scans = ALL
+          max_queries = 2200
+          leadership_lookback_days = 210
+          program_lookback_days = 180
+          integration_lookback_days = 180</pre><h3>Bestanden</h3><pre>data/people-watchlist.csv       # mag alleen kolom 'Linkedin URL' bevatten
+          data/linkedin-signals.csv       # concrete LinkedIn-posts / Sales Navigator-observaties
+          data/manual-signals.csv         # handmatig gevalideerde signalen
+          data/companies.txt              # extra aliases/accounts</pre></div>`;}
               """.replace('__DATA__', data_json)
-              html_doc = f"""<!doctype html><html lang='nl'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>CGI IT Landscape Signal Radar</title><style>{css}</style></head><body><div class='login'><div class='login-card'><div class='brand'>CGI Business Development</div><h1>IT Landscape Signal Radar</h1><p>Alleen concrete IT-landschap-signalen en gekwalificeerde formule-/ketenintegraties.</p><input id='pw' type='password' placeholder='Login code'><button class='btn' onclick='go()'>Open radar</button><div id='err' class='err'></div></div></div><div class='app'><div class='top'><h1>CGI IT Landscape Signal Radar</h1><p id='runmeta'></p></div><div id='stats' class='stats'></div><div class='tabs'><button class='tab active' data-tab='signals' onclick="tab('signals')">Signalen</button><button class='tab' data-tab='coverage' onclick="tab('coverage')">Coverage</button><button class='tab' data-tab='rejected' onclick="tab('rejected')">Afgewezen/Archive</button><button class='tab' data-tab='people' onclick="tab('people')">IT beslissers</button><button class='tab' data-tab='setup' onclick="tab('setup')">Setup</button></div><div class='wrap'><div id='content'></div></div></div><script>{js}</script></body></html>"""
+              html_doc = f"""<!doctype html><html lang='nl'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>CGI Retail IT Signal Radar</title><style>{css}</style></head><body><div class='login'><div class='login-card'><div class='eyebrow'>CGI Business Development</div><h1>Retail IT Signal Radar</h1><p>Dagelijkse radar voor IT-landschap-signalen, IT-beslissers en gekwalificeerde formule-/ketenintegraties.</p><input id='pw' type='password' placeholder='Login code'><button class='btn' onclick='go()'>Open radar</button><div id='err' class='err'></div></div></div><div class='app'><div class='hero'><div class='hero-inner'><div><div class='eyebrow'>CGI Retail & Consumer Services</div><h1>Opportunity Signal Board</h1><p>Weinig signalen, hoge kwaliteit: alleen IT-landschap, IT-capability, IT-leadership, platformkeuze, tender/security of gekwalificeerde retailintegratie.</p></div><div id='runmeta' class='runmeta'></div></div></div><div id='stats' class='stats'></div><div class='nav'><button class='tab active' data-tab='signals' onclick="tab('signals')">Signal board</button><button class='tab' data-tab='coverage' onclick="tab('coverage')">Coverage</button><button class='tab' data-tab='rejected' onclick="tab('rejected')">Afgewezen/Archive</button><button class='tab' data-tab='people' onclick="tab('people')">LinkedIn watchlist</button><button class='tab' data-tab='setup' onclick="tab('setup')">Setup</button></div><div class='wrap'><div id='content'></div></div></div><script>{js}</script></body></html>"""
               return html_doc
           
           def main():
@@ -1067,13 +1239,17 @@ jobs:
           
           if __name__ == '__main__':
               main()
-
           PY
-          python -m py_compile radar.py
-          RUN_SELF_TEST_ONLY=true python radar.py
-          python radar.py
 
-      - name: Upload GitHub Pages artifact
+      - name: Self-test quality gates
+        shell: bash
+        run: RUN_SELF_TEST_ONLY=true python radar.py
+
+      - name: Build dashboard
+        shell: bash
+        run: python radar.py
+
+      - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: _site
