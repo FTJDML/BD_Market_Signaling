@@ -1561,7 +1561,7 @@ jobs:
           # ----------------------------- Dashboard -----------------------------
           
           def js_escape_json(obj: Any) -> str:
-              # Avoid GitHub Actions expression collision; no ${{ }} created.
+              # Avoid GitHub Actions expression collision; no expression tokens are created.
               return json.dumps(obj, ensure_ascii=False).replace("</", "<\\/")
           
           
