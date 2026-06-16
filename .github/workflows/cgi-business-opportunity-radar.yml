@@ -1,30 +1,26 @@
-name: CGI IT Landscape Signal Radar V5
+name: CGI IT Landscape Signal Radar V8 Calibrated
 
 on:
   workflow_dispatch:
     inputs:
-      max_companies:
-        description: 'Aantal accounts scannen: ALL of een getal voor test'
-        required: false
-        default: 'ALL'
       min_score:
-        description: 'Minimumscore. 78 laat gekwalificeerde M&A zoals Ranzijn/Tuinland toe; 85 toont alleen hardere IT-signalen.'
+        description: "Minimumscore. 76 toont gekwalificeerde M&A/formule-integratie; 86 toont vooral directe IT-signalen."
         required: false
-        default: '78'
-      lookback_days:
-        description: 'Zoekvenster in dagen'
+        default: "76"
+      max_results_per_query:
+        description: "Aantal zoekresultaten per signaalquery"
         required: false
-        default: '30'
+        default: "25"
       include_linkedin_public_index:
-        description: 'Gebruik publieke zoekindex voor LinkedIn discovery. Geen LinkedIn scraping.'
+        description: "Publieke LinkedIn zoekindex gebruiken. Advies: false; gebruik liever linkedin-signals.csv."
         required: false
-        default: 'false'
+        default: "false"
       enable_rss_fallback:
-        description: 'Alleen aanzetten zonder Brave API als noodfallback; kan trager/noisier zijn.'
+        description: "Google News RSS fallback gebruiken als er geen Brave API key is."
         required: false
-        default: 'false'
+        default: "true"
   schedule:
-    - cron: '17 5 * * *'
+    - cron: "17 5 * * *"
 
 permissions:
   contents: read
@@ -32,7 +28,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: cgi-it-landscape-signal-radar-v8
   cancel-in-progress: true
 
 jobs:
@@ -45,1707 +41,642 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Write radar application
         shell: bash
         run: |
           cat > radar.py <<'PY'
+
           #!/usr/bin/env python3
-          # CGI IT Landscape Signal Radar V5
-          # Strict sales-intelligence radar for retail & consumer services IT opportunities.
-          
           from __future__ import annotations
-          
-          import csv
-          import datetime as dt
-          import hashlib
-          import html
-          import json
-          import os
-          import re
-          import sys
-          import time
-          import urllib.parse
-          import urllib.request
-          from dataclasses import dataclass, asdict
+          import csv, datetime as dt, hashlib, html, json, os, re, sys, time, unicodedata, urllib.parse, urllib.request, xml.etree.ElementTree as ET
           from pathlib import Path
-          from typing import Any, Dict, Iterable, List, Optional, Tuple
-          
+          from collections import Counter, defaultdict
+
           LOGIN_CODE = "BD_Signal_26!"
-          VERSION = "v5_it_landscape_strict"
+          VERSION = "v8_calibrated_it_landscape_alias_signal_centric"
+          LOCAL_TZ = dt.timezone(dt.timedelta(hours=2), name="Europe/Amsterdam")
           NOW_UTC = dt.datetime.now(dt.timezone.utc)
-          LOCAL_TZ_NAME = "Europe/Amsterdam"
-          
-          # --- Target universe: generated into workflow from user's provided list. ---
-          COMPANIES_RAW = """Organisatie
-          4+ Bouwmaterialen B.V.
-          A-Mac B.V.
-          Abal Wereldwinkel Amsterdam
-          Ace & Tate Group B.V.
-          Aces Direct
-          Aces Direct
-          Action Holding B.V.
-          AGU Holding B.V.
-          Ahrend Nederland B.V.
-          ALDI Culemborg B.V.
-          ALDI Deventer B.V.
-          ALDI Groningen B.V.
-          ALDI Holding B.V.
-          ALDI Holding B.V.
-          ALDI Roermond B.V.
-          Aldi Roosendaal
-          ALDI Zoetermeer B.V.
-          All Saints Retail Limited
-          Allego Holding B.V.
-          Alliance Automotive Group Benelux B.V.
-          Alliance Automotive Services
-          Alliance Automotive Trading B.V.
-          Altrex B.V.
-          Amacom, The Amazing Company
-          ANAC B.V.
-          Angro B.V.
-          Anker Amsterdam Spirits B.V.
-          Apotheek Voorzorg B.V.
-          Apotheek Voorzorg B.V.
-          Apple Retail Netherlands B.V.
-          Apple Retail Netherlands B.V.
-          Arcus Nederland B.V.
-          Arval B.V.
-          AS Watson (Europe) Retail Holdings B.V.
-          AS Watson (Health & Beauty Continental Europe) B.V.
-          Asian Food Group B.V.
-          ASICS Europe B.V.
-          ATAG Heating B.V.
-          ATAG Nederland B.V.
-          ATAG Nederland B.V.
-          Auping Groep B.V.
-          Auto Mudde & Kok B.V.
-          Auto Sturm Holding B.V.
-          AUTO1 European Cars B.V.
-          Autobedrijf Bluekens B.V.
-          Autobedrijf Bochane B.V.
-          Autobedrijf van den Udenhout B.V.
-          Avec B.V.
-          Azerty
-          Azerty
-          B.A. Geurts-Janssen B.V.
-          Babypark Kesteren
-          Bakkersteam B.V.
-          Banken Champignons B.V.
-          BAS Truck Center
-          BAS World B.V.
-          Basic-Fit N.V.
-          Bax-shop.nl B.V.
-          Bax-shop.nl B.V.
-          BCC Holding Amstelveen B.V.
-          Beaphar Beheer B.V.
-          Bever B.V.
-          Bever B.V.
-          Bison
-          BMW Nederland B.V.
-          Body & Fit Sportsnutrition B.V.
-          Boels Topholding B.V.
-          bol.com B.V.
-          Boni-Markten B.V.
-          BONITA Nederland
-          Bouwmaat Nederland B.V.
-          Bouwmaat Nederland B.V.
-          BP Europa SE - BP Nederland
-          Bridgestone Mobility Solutions B.V.
-          Brilmij Groep B.V.
-          Brocacef Groep N.V.
-          Broekhuis Dealer Holding B.V.
-          Broekhuis Zwolle
-          Brooks Sports B.V.
-          Brooks Sports B.V.
-          Bruna B.V.
-          Bruynzeel Keukens B.V.
-          Bruynzeel Keukens B.V.
-          BSH Huishoudapparaten B.V.
-          Bugaboo International B.V.
-          Bugaboo International B.V.
-          Bunnik Creations B.V.
-          Bunnik Plants Beheer B.V.
-          Burger Food Group B.V.
-          Carglass B.V.
-          Carpetright
-          Chanel International B.V.
-          Chanel International B.V.
-          CHEFS CULINAR
-          Cloetta Holland B.V.
-          Coca-Cola Europacific Partners Nederland B.V.
-          Cole Haan International B.V.
-          Cole Haan International B.V.
-          Colgate-Palmolive Nederland B.V.
-          Colgate-Palmolive Nederland B.V.
-          Condor Carpets B.V.
-          Condor Carpets B.V.
-          CONO Kaasmakers
-          Converse Netherlands B.V.
-          Coolblue B.V.
-          Coolblue B.V.
-          Coöperatie Odin U.A.
-          Coöperatie Primera B.A.
-          Coöperatie Primera B.A.
-          Coöperatief Koninklijk Tuinbouwcentrum Horticoop U.A.
-          Coöperatieve Handelsvereniging SALO U.A.
-          Coöperatieve Inkoopvereniging Superunie B.A.
-          Corteva Agriscience Netherlands B.V.
-          Costes B.V.
-          Costes Holding B.V.
-          Cotton Club B.V.
-          Cotton Club Holding B.V.
-          Cotton Club Holding B.V.
-          Coty International B.V.
-          Coty Netherlands B.V.
-          Coty Netherlands B.V.
-          Crocs Europe B.V.
-          CRV Holding B.V.
-          Cycling Sports Group Europe B.V.
-          Cycling Sports Group Europe B.V.
-          CZAV
-          D&M Europe B.V.
-          Daily Fresh Food B.V.
-          Daily Fresh Holding B.V.
-          Daka Holding B.V.
-          Dalli-De Klok B.V.
-          Davide Campari-Milano N.V.
-          De Banden Express B.V.
-          De Banden Express B.V.
-          De Graaf Bakeries B.V.
-          De Groot Fresh Group B.V.
-          De Haan Minerale Oliën B.V.
-          De Klok Banden B.V.
-          De Klok Banden B.V.
-          De Kuyper Holding N.V.
-          De Kuyper Holding N.V.
-          De Lancelot B.V.
-          De Leeuw N.V.
-          De MandemakersGroep Holding B.V.
-          De Stiho Groep B.V.
-          Decathlon Netherlands B.V.
-          Deckers Benelux B.V.
-          Deckers Benelux B.V.
-          Deka Exploitatiemaatschappij B.V.
-          Del Monte (Holland) B.V.
-          Deli Home Products B.V.
-          Delta Wines B.V.
-          Delta Wines Holding 2 B.V.
-          Depesche Vertrieb GmbH & Co KG Nederland
-          Destil B.V.
-          Diageo Brands
-          Diageo Holdings Netherlands B.V.
-          Diageo Nederland B.V.
-          Dille & Kamille (International) B.V.
-          DO IT Organic B.V.
-          DO IT Organic Food Ingredients B.V.
-          Dobla Beheer B.V.
-          DOC Kaas
-          DocMorris N.V.
-          Domino's Pizza Europe B.V.
-          Dorita's Beauty Products B.V.
-          Dott
-          Dr. Oetker Nederland B.V.
-          Drankengroothandel Henk Smit B.V.
-          Duni Benelux B.V.
-          Dutch Flower Group B.V.
-          DynaGroup B.V.
-          Dyson B.V.
-          Dyson B.V.
-          e-luscious B.V.
-          e-luscious B2C B.V.
-          Ebro Ingredients B.V.
-          ECCO EMEA B.V.
-          ECCO EMEA B.V.
-          ECCO EMEA Sales SE
-          ECCO Leather B.V.
-          ECOM Cocoa Holdings B.V.
-          EG Retail (Netherlands) B.V.
-          Egga Food B.V.
-          Eichholtz B.V.
-          Eichholtz B.V.
-          Eijerkamp Holding B.V.
-          Elburg Foods B.V.
-          Electro-Cirkel RETAIL B.V.
-          ElectronicPartner Nederland B.V.
-          Elho Beheer B.V.
-          Enigma Distribution Benelux B.V.
-          Enpal B.V.
-          ENVIEM Retail B.V.
-          Enviem Retail Holding B.V.
-          Esschert Design B.V.
-          Esschert Design B.V.
-          Estee Lauder B.V.
-          Estee Lauder B.V.
-          Europa Apotheek Venlo
-          Europa Apotheek Venlo
-          EUROSHELL CARDS B.V.
-          Ferrero B.V.
-          Fietsvoordeelshop.nl B.V.
-          Fietsvoordeelshop.nl B.V.
-          Fixami Nederland B.V.
-          Foot Locker Europe B.V.
-          Foot Locker Europe.com B.V.
-          FOOX | Bergsma Franeker B.V.
-          Garcia B.V.
-          Garmin Nederland B.V.
-          Giant Europe B.V.
-          Gispen Nederland B.V.
-          Goodyear (Nederland) B.V.
-          Goossens Wonen & Slapen
-          GrandVision
-          H & M Hennes & Mauritz International B.V.
-          Habufa Meubelen B.V.
-          Hans Anders Retail Group Holding B.V.
-          Hans Anders Retail Group Holding B.V.
-          Hans Geveling Supermarkten II B.V.
-          Haribo The Netherlands & Belgium B.V.
-          Haribo The Netherlands & Belgium B.V.
-          Hästens Beds International B.V.
-          Hästens Beds International B.V.
-          Hedin Automotive B.V.
-          Hedin Automotive Hoofddorp
-          Heineken N.V.
-          HEMA B.V.
-          Hendi Tools for Chefs
-          Hendi Tools for Chefs
-          Henri Willig Groep
-          Henri Willig Groep
-          Heutink B.V.
-          Heutink B.V.
-          Heuver Tyres
-          Hilti Nederland B.V.
-          Holland & Barrett
-          Holland & Barrett
-          Homefashion-Group B.V.
-          Hoogvliet Super B.V.
-          Horticoop B.V.
-          Horticoop B.V.
-          Hugo Boss Benelux B.V.
-          Hugo Boss Benelux B.V.
-          Hugo Boss Benelux Retail B.V.
-          Hugo Boss Benelux Retail B.V.
-          Hunkemöller International B.V.
-          Husqvarna Nederland B.V.
-          Husqvarna Nederland B.V.
-          Hyundai Motor Netherlands B.V.
-          Iddink Learning Materials B.V.
-          Iglo Nederland B.V.
-          Iglo Nederland B.V.
-          IKEA B.V.
-          IKEA Nederland B.V.
-          Independer
-          Inkoopcombinatie Sofa
-          Inter-Rent B.V.
-          INTER-SPRINT BANDEN B.V.
-          Intergamma B.V.
-          Intertoys B.V.
-          Intertoys B.V.
-          Intra B.V.
-          Intratuin Holding B.V.
-          Intratuin Trade & Logistics B.V.
-          Iveco Nederland B.V.
-          Iveco Nederland B.V.
-          IVECO Schouten B.V.
-          IVECO Schouten B.V.
-          Jan Linders B.V.
-          JD Sports Fashion B.V.
-          JD Sports Fashion B.V.
-          Jeans Centre B.V.
-          JYSK B.V.
-          JYSK B.V.
-          Kamera Express Rotterdam B.V.
-          Kawasaki Motors Europe N.V.
-          Kees Smit Tuinmeubelen B.V.
-          Keter Benelux B.V.
-          Kia Nederland B.V.
-          Kidsspel
-          Kleyn Trucks B.V.
-          Koninklijke Ahold Delhaize N.V.
-          Koninklijke Jumbo Food Groep B.V.
-          Koninklijke Verkade N.V.
-          Kooistra Supermarkten Bolsward B.V.
-          Kooistra Supermarkten Bolsward B.V.
-          Krasnapolsky Hotels & Restaurants N.V.
-          Kruitbosch Cycle Universe Holding B.V.
-          Kruitbosch Zwolle B.V.
-          Kwantum B.V.
-          Kwantum B.V.
-          Kwantum Holding B.V.
-          L'Oréal Nederland B.V.
-          LACTALIS NEDERLAND B.V.
-          Lagardère Travel Retail the Netherlands B.V.
-          LEGO Nederland B.V.
-          LEGO Nederland B.V.
-          Lekkerland Beheer N.V.
-          Leolux Furniture Group B.V.
-          LG Electronics Benelux Sales B.V.
-          Lidl
-          Livera B.V.
-          Livera B.V.
-          Livit Orthopedie
-          Louis Vuitton B.V.
-          Louis Vuitton B.V.
-          Louwman MB B.V.
-          Lucas Bols B.V.
-          Luxottica The Netherlands B.V.
-          MAAZ Cheese B.V.
-          MAAZ Dairy Foods Group B.V.
-          Makita Nederland B.V.
-          Mantel Arnhem B.V.
-          Marc O'Polo Einzelhandels GmbH Dutch branch
-          Marc O'Polo Einzelhandels GmbH Dutch branch
-          Mars Food Europe B.V.
-          Mars Nederland
-          Mattel Europa B.V.
-          Maxeda DIY B.V.
-          Maxeda DIY Group B.V.
-          MediaMarkt Nederland
-          Mediq Groep
-          Mediq Top Holding B.V.
-          Mepal B.V.
-          Mepal B.V.
-          Mercedes-Benz Nederland B.V.
-          Meyra Retail & Services B.V.
-          MGA Entertainment (Netherlands) B.V.
-          Michelin Nederland N.V.
-          Michelin Nederland N.V.
-          Microsoft B.V.
-          Miele Nederland B.V.
-          Miele Nederland B.V.
-          Mirage Retail Group B.V.
-          Mitsubishi Motor Sales Nederland B.V.
-          Mitsubishi Motors Europe B.V.
-          Moba Group B.V.
-          Moet Hennessy (Nederland) B.V.
-          Mondelez Nederland B.V.
-          Mosa Holding B.V.
-          Mulberry Company (Sales) Limited
-          Mulberry Company (Sales) Limited
-          My Jewellery B.V.
-          My Jewellery B.V.
-          Nature's Pride B.V.
-          Nelson Schoenen B.V.
-          Nelson Schoenen B.V.
-          Nespresso Nederland B.V.
-          Nespresso Nederland B.V.
-          Nestlé Nederland B.V.
-          NETTORAMA GROEP B.V.
-          Nettorama Merkendiscount B.V.
-          New York Pizza Management B.V.
-          NEW YORKER Nederland B.V.
-          NEW YORKER Nederland B.V.
-          NIKE 360 Holding B.V.
-          NIKE Retail
-          NL Phonedeal B.V.
-          NRGValue Tankstations Nederland B.V.
-          NUNA International B.V.
-          O'Neill Europe B.V.
-          O'Neill Europe B.V.
-          Obelink Vrijetijdsmarkt B.V.
-          Obelink Vrijetijdsmarkt B.V.
-          Omoda Holding B.V.
-          ONE Retail B.V.
-          ONLY Stores Holland B.V.
-          Otto B.V.
-          Patagonia Europe Coöperatief U.A.
-          Patagonia Europe Coöperatief U.A.
-          Paul Retail B.V.
-          Peek & Cloppenburg Holding B.V.
-          Pepe Jeans Europe B.V.
-          Pepe Jeans Europe B.V.
-          Petrol Industries B.V.
-          Petrol Industries B.V.
-          Pets Place Boerenbond Retail B.V.
-          Pets Place Boerenbond Retail B.V.
-          Picnic B.V.
-          Picnic Nederland B.V.
-          Plato B.V.
-          Plieger B.V.
-          PLUS Supermarkten B.V.
-          Poiesz Beheer B.V.
-          Poiesz Supermarkten B.V.
-          Porsche Centrum Gelderland
-          Porsche Centrum Twente
-          Pouw Dealer
-          Primark Netherlands B.V.
-          Profile International N.V.
-          Promessa
-          PVH Brands Netherlands B.V.
-          PVH Brands Netherlands B.V.
-          Quooker International B.V.
-          Ranzijn tuin & dier B.V.
-          Ranzijn tuin & dier B.V.
-          REV'IT! SPORT INTERNATIONAL B.V.
-          REV'IT! SPORT INTERNATIONAL B.V.
-          Ricoh
-          Rituals Cosmetics Enterprise B.V.
-          ROSSMANN CENTRAL EUROPE B.V.
-          Royal Canin Nederland B.V.
-          Samsung Electronics Benelux B.V.
-          Schaap en Citroen B.V.
-          Schoonenberg Hoorcomfort
-          Schuurman Schoenen B.V.
-          Seats and Sofas B.V.
-          Selecta Netherlands B.V.
-          Shimano Benelux B.V.
-          Shoeby-Shop B.V.
-          Sissy-Boy B.V.
-          Sixt B.V.
-          Skechers USA Benelux B.V.
-          Skechers USA Benelux B.V.
-          Slagerij Kaldenberg B.V.
-          Slagerij Kaldenberg B.V.
-          Sligro Food Group N.V.
-          SnowWorld B.V.
-          Solar Nederland B.V.
-          SolarToday Franchise B.V.
-          SolarToday Franchise B.V.
-          SoLow
-          SoLow
-          Sonos Europe B.V.
-          Sony Interactive Entertainment Benelux B.V.
-          Spar Holding B.V.
-          Specialized Europe B.V.
-          Specialized Europe B.V.
-          Sports Unlimited Retail B.V.
-          Stage Entertainment Holding B.V.
-          Staples Nederland B.V.
-          Staples Nederland B.V.
-          Stationsfoodstore
-          Stationsfoodstore
-          Stella Fietsen Holding B.V.
-          Steve Madden Europe B.V.
-          Steve Madden Europe B.V.
-          Stichting Wereldwinkel Aalsmeer
-          Stichting Wereldwinkel Arnhem-Velp
-          Stichting Wereldwinkel Beverwijk
-          Stichting Wereldwinkel Leidschendam-Voorburg
-          Stichting Wereldwinkel Ommen
-          Stichting Wereldwinkel Venray
-          Suit Supply
-          Suit Supply
-          Svendsen Sport
-          Swinkels Family Brewers
-          Swiss Sense B.V.
-          Swiss Sense B.V.
-          Takko Nederland B.V.
-          Tamoil Nederland B.V.
-          Ter Stal Textiel B.V.
-          Ter Stal Textiel B.V.
-          The Phone House Netherlands B.V.
-          The Phone House Netherlands B.V.
-          The Sting B.V.
-          The Sting B.V.
-          The Walt Disney Company (Benelux) B.V.
-          Timber and Building Supplies Holland N.V.
-          TIP Trailer Services Netherlands B.V.
-          TK Home Solutions B.V.
-          TK Maxx
-          TomTom Sales B.V.
-          Toolstation Europe B.V.
-          TotalEnergies Marketing Nederland N.V.
-          TP-LINK Enterprises Netherlands B.V.
-          Transityre B.V.
-          Tuindeco Topco B.V.
-          Ubbink Garden B.V.
-          Under Armour Europe B.V.
-          Urban Spa Beauty Junkies
-          Van den Ban Autobanden B.V.
-          Van Eerd Beheer B.V.
-          Van Loon Retail & Foodservice B.V.
-          Van Mossel Dealer Groep Nederland B.V.
-          Van Oers United B.V.
-          Van Tilburg Mode en Sport B.V.
-          Van Tilburg Mode en Sport B.V.
-          VANMOOF Global Holding
-          Vegro Verpleegartikelen B.V.
-          Vepa, the furniture factory
-          Vida XL B.V.
-          Viking Direct
-          Vodafone Libertel B.V.
-          Volvo Car Nederland B.V.
-          Volvo Group Truck Center B.V.
-          Vomar Holding B.V.
-          Vos Supermarkten Holding B.V.
-          VVV Cadeaubonnen B.V.
-          Welkoop Retail B.V.
-          Wensink Automotive B.V.
-          Wereldwinkel Amersfoort
-          Wereldwinkel Appingedam
-          Wereldwinkel Bergen NH
-          Wereldwinkel Berkel en Rodenrijs
-          Wereldwinkel Breda
-          Wereldwinkel Breukelen
-          Wereldwinkel Doetinchem
-          Wereldwinkel Dordrecht
-          Wereldwinkel Dronten
-          Wereldwinkel Epe
-          Wereldwinkel Maassluis
-          Wereldwinkel Pijnacker
-          Wereldwinkel Sassenheim
-          Wereldwinkel Tilburg
-          Wereldwinkel Varsseveld
-          Wereldwinkel Waalwijk
-          Wereldwinkel Zoetermeer
-          WestCord Hotels B.V.
-          Wibra Supermarkt B.V.
-          Wibra Supermarkt B.V.
-          Wittebrug
-          Wittebrug (Wittebrug Autobedrijven)
-          Witzand Bouwmaterialen B.V.
-          Würth-Nederland B.V.
-          Xenos B.V.
-          Xenos B.V.
-          Xiaomi Technology Netherlands B.V.
-          XXL Group B.V.
-          XXL Nutrition B.V.
-          Yamaha Motor Europe N.V.
-          Yanmar Europe B.V.
-          Young Living Europe B.V.
-          YourSurprise.com
-          YourSurprise.com
-          Zara
-          Zara
-          Zeeman Groep B.V.
-          Zeeuw & Zeeuw FordStore Utrecht
-          Zeeuw & Zeeuw FordStore Utrecht
-          Zeeuw & Zeeuw Kia
-          Zeeuw & Zeeuw Renault
-          nexeye B.V.
-          Pathé Theatres B.V.
-          Hornbach Bouwmarkt Nederland B.V.
-          McDonald’s Nederland B.V.
-          Domino’s Pizza Netherlands B.V.
-          New York Pizza B.V.
-          Q Park Operations Netherlands B.V.
-          P1 Parking Nederland B.V.
-          Interparking Nederland B.V.
-          BrainWash Kappers B.V.
-          Cosmo Hairstyling B.V.
-          AMI Kappers B.V.
-          IKEA B.V. (NL retailentiteit, exacte naam via CI)
-          Decathlon Nederland B.V.
-          Team Kappers B.V.
-          Kinki Kappers B.V.
-          APCOA PARKING Nederland B.V.
-          Loetje Groep B.V.
-          Van der Valk Services B.V. / Hotels & Restaurants (kies juiste entiteit in CI)
-          Johnny’s Burger Company B.V.
-          KFC Netherlands B.V.
-          Blokker B.V.
-          Big Bazar B.V.
-          Xenos B.V.
-          Wibra B.V.
-          Leen Bakker B.V.
-          Kwantum B.V.
-          C&A Nederland B.V.
-          Hunkemöller International B.V.
-          Livera B.V.
-          Sacha Schoenen B.V.
-          Scapino B.V.
-          Siebel Juweliers B.V.
-          Schaap en Citroen B.V.
-          My Jewellery B.V.
-          Intratuin Holding B.V.
-          DA Drogerij Service B.V.
-          SoLow B.V.
-          MR MARVIS Netherlands B.V.
-          de Bijenkorf
-          Dirk van den Broek
-          Gall & Gall
-          HANOS Internationale Horeca Groothandel
-          Beter Bed
-          fonQ
-          Wehkamp Retail Group
-          Otrium
-          Plein.nl
-          
-          Tuinland
-          Albron
-          Bagels & Beans
-          FEBO
-          Dudok Horeca Groep
-          Poké Perfect
-          Mr. Sushi Nederland
-          t Zusje
-          citizenM hotels
-          Corendon
-          The Social Hub
-          The Hoxton
-          The Usual Hotels
-          SportCity
-          OGER
-          Pauw
-          Patta
-          King Louie
-          YAYA
-          LABFRESH
-          Equalité
-          VanMoof
-          VELORETTI
-          Euromaster Nederland
-          Tony's Chocolonely
-          Marie-Stella-Maris
-          Fish Tales
-          Royal Swinkels
-          
-          Oger
-          Nolson
-          daily paper
-          YAYA
-          Studio anneloes
-          denham
-          wefashion
-          Floris van bommel
-          VanLier
-          karwei
-          superkeukens
-          debijenkorf
-          bruna
-          buzzbee
-          keurslager
-          Audax
-          BeterBed Holding B.V
-          Cool Investments
-          EK Retail group
-          Internationale meubel groep
-          JOG Group
-          United Retail
-          Termeer Schoenen
-          Van Uffelen Group
-          Ziengs Group
-          Otrium
-          FEBO
-          Ace & Tate (fysieke winkels NL + internationaal)
-          Amac (Apple Premium Reseller) (meerdere fysieke stores)
-          Athenaeum Boekhandel (meerdere locaties)
-          Bax Music (megastores + omnichannel)
-          Burned Sports (fysieke winkels)
-          EK Retail (retailorganisatie met aangesloten winkels)
-          Fat Phill’s (groeiende fastfood keten)
-          Fleurop (fysieke bloemisten netwerk)
-          FOUR Amsterdam (multi-store fashion)
-          Gielen Lederwaren (meerdere winkels)
-          Just Brands (PME, Cast Iron retailstores)
-          King Louie (eigen winkels)
-          Kipperij (meerdere vestigingen)
-          Kookhuis (fysieke winkels)
-          Lobbes Speelgoed (winkel + omnichannel)
-          MAGIC Bodyfashion (retail + wholesale maar ook D2C)
-          Mantel (fietswinkels + omnichannel)
-          Mooie Boules (meerdere locaties horeca leisure)
-          PassaSports (retailformule)
-          Piercing Mania (fysieke shops)
-          Poké&ZO (meerdere vestigingen)
-          Power Supplements (retailformule)
-          Sahan Supermarkten (supermarktketen)
-          Sensi Seeds (shops in NL)
-          Skins (SKINS Cosmetics) (meerdere stores)
-          t Zusje (restaurantketen)
-          The Seafood Bar (meerdere locaties)
-          The Tosti Club (keten)
-          Things I Like Things I Love (retail)
-          Tony’s Chocolonely (flagship retail)
-          totaalBED (meerdere winkels)
-          Used Products (grote franchiseformule)
-          Van Asten Babysuperstore (grote fysieke winkel + mogelijk uitbreiding)
-          Vascobelo (meerdere vestigingen)
-          VELORETTI (brand stores)
-          Warenhuis Vanderveen (groot warenhuis)
-          YoYo! Fresh Tea Bar (meerdere locaties)
-          Zielinski & Rozen (retail presence)
-          Zusss (eigen winkels)
-          10DAYS (beperkte fysieke presence)
-          Athenaeum (kleiner maar stabiel)
-          BOB Autowas (multi locatie maar lagere IT-complexiteit)
-          BandenConcurrent (fysiek + online)
-          Beerens Group (automotive retail)
-          Broekhuis Groep (auto retail groot)
-          Dusseldorp BMW MINI
-          Euromaster Nederland
-          Falcon Carwash
-          Hedin Automotive NL
-          Huijink Mobility Group
-          Kooijman Autogroep
-          KwikFit (zeer interessant, maar corporate)
-          Louwman Group (groot, complex)
-          Mengelers Automotive
-          Munsterhuis
-          Profile (fietsformule)
-          Spuigroep (tankstations + retail)
-          Vallei Auto Groep
-          Van Mossel Automotive Group (zeer groot)
-          Wassink Autogroep
-          Westfalia Campercentrum
-          Zeekr Europe (nieuw retailconcept)
-          Kwalitaria
-          Subway
-          Five guys
-          Wehkamp
-          Expert
-          Dreamland
-          Uniqlo
-          Lucardi
-          C&A
-          Wibra
-          State of Art
-          VanHaren (Schoenen)
-          Omoda
-          Bever (outdoor)
-          Xenos
-          Flying Tiger
-          Leen Bakker
-          Kwantum
-          Pon Automotive
-          Gents
-          Suitable
-          Jysk
-          Maxeda DIY Group
-          Intratuin
-          Picnic
-          Sonos
-          Shimano
-          Wehkamp
-          Espirit
-          Pearle
-          Rivera Maison
-          Douglas
-          Heineken
-          Otto Group
-          Cameranu
-          The Magnum Ice Cream Company
-          United Soft Drinks
-          Stach
-          Beterhoren
-          Tacomundo
-          Vlaams broodhuys
-          Van der valk
-          Broodje ben
-          The society shop
-          Petit bateaut
-          Simon meijssen
-          Joe & the juice
-          Marie stella maris
-          Wakuli
-          Pauw
-          Grapedistrict
-          Soap
-          De pizzabakkers
-          X2o badkamers
-          De echte bakker
-          Zonnestudio
-          Rob peetoom
-          Phonehouse
-          Livera
-          
-          """
-          
-          # ----------------------------- Utilities -----------------------------
-          
-          def norm_space(s: str) -> str:
-              return re.sub(r"\s+", " ", (s or "").strip())
-          
-          
-          def ascii_fold(s: str) -> str:
-              # lightweight normalize, keeps Dutch mostly intact but lowers noise
-              return (s or "").replace("’", "'").replace("`", "'").replace("–", "-").replace("—", "-")
-          
-          
-          def lower(s: str) -> str:
-              return ascii_fold(s).lower()
-          
-          
-          def word_re(term: str) -> re.Pattern:
-              # Use boundary-like matching for short terms, also accepts +, /, # in terms.
-              escaped = re.escape(term.lower())
-              return re.compile(r"(?<![a-z0-9])" + escaped + r"(?![a-z0-9])", re.I)
-          
-          
-          def has_word(text: str, terms: Iterable[str]) -> bool:
-              t = lower(text)
-              for term in terms:
-                  if word_re(term).search(t):
-                      return True
-              return False
-          
-          
-          def find_terms(text: str, terms: Iterable[str]) -> List[str]:
-              t = lower(text)
-              hits = []
-              for term in terms:
-                  if word_re(term).search(t):
-                      hits.append(term)
-              return hits
-          
-          
-          def contains_phrase(text: str, terms: Iterable[str]) -> bool:
-              t = lower(text)
-              return any(lower(x) in t for x in terms)
-          
-          
-          def url_domain(url: str) -> str:
-              try:
-                  return urllib.parse.urlparse(url).netloc.lower().replace("www.", "")
-              except Exception:
-                  return ""
-          
-          
-          def stable_id(*parts: str) -> str:
-              h = hashlib.sha1("|".join(parts).encode("utf-8", errors="ignore")).hexdigest()
-              return h[:16]
-          
-          
-          def parse_date(value: str | None) -> str:
-              if not value:
-                  return NOW_UTC.isoformat()
-              value = str(value).strip()
-              # Try a few known formats; fallback to now.
-              for fmt in ["%Y-%m-%d", "%d-%m-%Y", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ"]:
-                  try:
-                      d = dt.datetime.strptime(value.replace("Z", "+0000"), fmt)
-                      if d.tzinfo is None:
-                          d = d.replace(tzinfo=dt.timezone.utc)
-                      return d.isoformat()
-                  except Exception:
-                      pass
-              return NOW_UTC.isoformat()
-          
-          # ----------------------------- Companies -----------------------------
-          
-          NON_TARGET_CONTEXT_TERMS = [
-              # tech/platform vendors or suppliers that may appear in stack signals but are not core retail targets
-              "microsoft", "ricoh", "tp-link", "xiaomi", "sony interactive", "samsung electronics", "lg electronics",
-              "tomtom", "dyson", "garmin", "makita", "bosch", "miele", "quooker", "bsh", "hilti",
-              # pure FMCG / commodity / manufacturing terms; still monitored for IT roles, but M&A won't auto-signal
-              "kaas", "dairy", "foods", "food ingredients", "brewers", "brewery", "cocoa", "ingredients", "champignons",
-              "bakkeries", "bakeries", "wines", "dranken", "beverages", "chocolonely", "coca-cola", "heineken",
-              "swinkels", "haribo", "ferrero", "nestle", "mondelez", "iglo", "colgate", "l'oreal", "coty", "estee lauder",
-              "royal canin", "beaphar", "tony's", "fish tales", "maaz", "cono", "doc kaas", "lactalis", "verkade",
+          COMPANIES_RAW = "Organisatie\n4+ Bouwmaterialen B.V.\nA-Mac B.V.\nAbal Wereldwinkel Amsterdam\nAce & Tate Group B.V.\nAces Direct\nAces Direct\nAction Holding B.V.\nAGU Holding B.V.\nAhrend Nederland B.V.\nALDI Culemborg B.V.\nALDI Deventer B.V.\nALDI Groningen B.V.\nALDI Holding B.V.\nALDI Holding B.V.\nALDI Roermond B.V.\nAldi Roosendaal\nALDI Zoetermeer B.V.\nAll Saints Retail Limited\nAllego Holding B.V.\nAlliance Automotive Group Benelux B.V.\nAlliance Automotive Services\nAlliance Automotive Trading B.V.\nAltrex B.V.\nAmacom, The Amazing Company\nANAC B.V.\nAngro B.V.\nAnker Amsterdam Spirits B.V.\nApotheek Voorzorg B.V.\nApotheek Voorzorg B.V.\nApple Retail Netherlands B.V.\nApple Retail Netherlands B.V.\nArcus Nederland B.V.\nArval B.V.\nAS Watson (Europe) Retail Holdings B.V.\nAS Watson (Health & Beauty Continental Europe) B.V.\nAsian Food Group B.V.\nASICS Europe B.V.\nATAG Heating B.V.\nATAG Nederland B.V.\nATAG Nederland B.V.\nAuping Groep B.V.\nAuto Mudde & Kok B.V.\nAuto Sturm Holding B.V.\nAUTO1 European Cars B.V.\nAutobedrijf Bluekens B.V.\nAutobedrijf Bochane B.V.\nAutobedrijf van den Udenhout B.V.\nAvec B.V.\nAzerty\nAzerty\nB.A. Geurts-Janssen B.V.\nBabypark Kesteren\nBakkersteam B.V.\nBanken Champignons B.V.\nBAS Truck Center\nBAS World B.V.\nBasic-Fit N.V.\nBax-shop.nl B.V.\nBax-shop.nl B.V.\nBCC Holding Amstelveen B.V.\nBeaphar Beheer B.V.\nBever B.V.\nBever B.V.\nBison\nBMW Nederland B.V.\nBody & Fit Sportsnutrition B.V.\nBoels Topholding B.V.\nbol.com B.V.\nBoni-Markten B.V.\nBONITA Nederland\nBouwmaat Nederland B.V.\nBouwmaat Nederland B.V.\nBP Europa SE - BP Nederland\nBridgestone Mobility Solutions B.V.\nBrilmij Groep B.V.\nBrocacef Groep N.V.\nBroekhuis Dealer Holding B.V.\nBroekhuis Zwolle\nBrooks Sports B.V.\nBrooks Sports B.V.\nBruna B.V.\nBruynzeel Keukens B.V.\nBruynzeel Keukens B.V.\nBSH Huishoudapparaten B.V.\nBugaboo International B.V.\nBugaboo International B.V.\nBunnik Creations B.V.\nBunnik Plants Beheer B.V.\nBurger Food Group B.V.\nCarglass B.V.\nCarpetright\nChanel International B.V.\nChanel International B.V.\nCHEFS CULINAR\nCloetta Holland B.V.\nCoca-Cola Europacific Partners Nederland B.V.\nCole Haan International B.V.\nCole Haan International B.V.\nColgate-Palmolive Nederland B.V.\nColgate-Palmolive Nederland B.V.\nCondor Carpets B.V.\nCondor Carpets B.V.\nCONO Kaasmakers\nConverse Netherlands B.V.\nCoolblue B.V.\nCoolblue B.V.\nCoöperatie Odin U.A.\nCoöperatie Primera B.A.\nCoöperatie Primera B.A.\nCoöperatief Koninklijk Tuinbouwcentrum Horticoop U.A.\nCoöperatieve Handelsvereniging SALO U.A.\nCoöperatieve Inkoopvereniging Superunie B.A.\nCorteva Agriscience Netherlands B.V.\nCostes B.V.\nCostes Holding B.V.\nCotton Club B.V.\nCotton Club Holding B.V.\nCotton Club Holding B.V.\nCoty International B.V.\nCoty Netherlands B.V.\nCoty Netherlands B.V.\nCrocs Europe B.V.\nCRV Holding B.V.\nCycling Sports Group Europe B.V.\nCycling Sports Group Europe B.V.\nCZAV\nD&M Europe B.V.\nDaily Fresh Food B.V.\nDaily Fresh Holding B.V.\nDaka Holding B.V.\nDalli-De Klok B.V.\nDavide Campari-Milano N.V.\nDe Banden Express B.V.\nDe Banden Express B.V.\nDe Graaf Bakeries B.V.\nDe Groot Fresh Group B.V.\nDe Haan Minerale Oliën B.V.\nDe Klok Banden B.V.\nDe Klok Banden B.V.\nDe Kuyper Holding N.V.\nDe Kuyper Holding N.V.\nDe Lancelot B.V.\nDe Leeuw N.V.\nDe MandemakersGroep Holding B.V.\nDe Stiho Groep B.V.\nDecathlon Netherlands B.V.\nDeckers Benelux B.V.\nDeckers Benelux B.V.\nDeka Exploitatiemaatschappij B.V.\nDel Monte (Holland) B.V.\nDeli Home Products B.V.\nDelta Wines B.V.\nDelta Wines Holding 2 B.V.\nDepesche Vertrieb GmbH & Co KG Nederland\nDestil B.V.\nDiageo Brands\nDiageo Holdings Netherlands B.V.\nDiageo Nederland B.V.\nDille & Kamille (International) B.V.\nDO IT Organic B.V.\nDO IT Organic Food Ingredients B.V.\nDobla Beheer B.V.\nDOC Kaas\nDocMorris N.V.\nDomino's Pizza Europe B.V.\nDorita's Beauty Products B.V.\nDott\nDr. Oetker Nederland B.V.\nDrankengroothandel Henk Smit B.V.\nDuni Benelux B.V.\nDutch Flower Group B.V.\nDynaGroup B.V.\nDyson B.V.\nDyson B.V.\ne-luscious B.V.\ne-luscious B2C B.V.\nEbro Ingredients B.V.\nECCO EMEA B.V.\nECCO EMEA B.V.\nECCO EMEA Sales SE\nECCO Leather B.V.\nECOM Cocoa Holdings B.V.\nEG Retail (Netherlands) B.V.\nEgga Food B.V.\nEichholtz B.V.\nEichholtz B.V.\nEijerkamp Holding B.V.\nElburg Foods B.V.\nElectro-Cirkel RETAIL B.V.\nElectronicPartner Nederland B.V.\nElho Beheer B.V.\nEnigma Distribution Benelux B.V.\nEnpal B.V.\nENVIEM Retail B.V.\nEnviem Retail Holding B.V.\nEsschert Design B.V.\nEsschert Design B.V.\nEstee Lauder B.V.\nEstee Lauder B.V.\nEuropa Apotheek Venlo\nEuropa Apotheek Venlo\nEUROSHELL CARDS B.V.\nFerrero B.V.\nFietsvoordeelshop.nl B.V.\nFietsvoordeelshop.nl B.V.\nFixami Nederland B.V.\nFoot Locker Europe B.V.\nFoot Locker Europe.com B.V.\nFOOX | Bergsma Franeker B.V.\nGarcia B.V.\nGarmin Nederland B.V.\nGiant Europe B.V.\nGispen Nederland B.V.\nGoodyear (Nederland) B.V.\nGoossens Wonen & Slapen\nGrandVision\nH & M Hennes & Mauritz International B.V.\nHabufa Meubelen B.V.\nHans Anders Retail Group Holding B.V.\nHans Anders Retail Group Holding B.V.\nHans Geveling Supermarkten II B.V.\nHaribo The Netherlands & Belgium B.V.\nHaribo The Netherlands & Belgium B.V.\nHästens Beds International B.V.\nHästens Beds International B.V.\nHedin Automotive B.V.\nHedin Automotive Hoofddorp\nHeineken N.V.\nHEMA B.V.\nHendi Tools for Chefs\nHendi Tools for Chefs\nHenri Willig Groep\nHenri Willig Groep\nHeutink B.V.\nHeutink B.V.\nHeuver Tyres\nHilti Nederland B.V.\nHolland & Barrett\nHolland & Barrett\nHomefashion-Group B.V.\nHoogvliet Super B.V.\nHorticoop B.V.\nHorticoop B.V.\nHugo Boss Benelux B.V.\nHugo Boss Benelux B.V.\nHugo Boss Benelux Retail B.V.\nHugo Boss Benelux Retail B.V.\nHunkemöller International B.V.\nHusqvarna Nederland B.V.\nHusqvarna Nederland B.V.\nHyundai Motor Netherlands B.V.\nIddink Learning Materials B.V.\nIglo Nederland B.V.\nIglo Nederland B.V.\nIKEA B.V.\nIKEA Nederland B.V.\nIndepender\nInkoopcombinatie Sofa\nInter-Rent B.V.\nINTER-SPRINT BANDEN B.V.\nIntergamma B.V.\nIntertoys B.V.\nIntertoys B.V.\nIntra B.V.\nIntratuin Holding B.V.\nIntratuin Trade & Logistics B.V.\nIveco Nederland B.V.\nIveco Nederland B.V.\nIVECO Schouten B.V.\nIVECO Schouten B.V.\nJan Linders B.V.\nJD Sports Fashion B.V.\nJD Sports Fashion B.V.\nJeans Centre B.V.\nJYSK B.V.\nJYSK B.V.\nKamera Express Rotterdam B.V.\nKawasaki Motors Europe N.V.\nKees Smit Tuinmeubelen B.V.\nKeter Benelux B.V.\nKia Nederland B.V.\nKidsspel\nKleyn Trucks B.V.\nKoninklijke Ahold Delhaize N.V.\nKoninklijke Jumbo Food Groep B.V.\nKoninklijke Verkade N.V.\nKooistra Supermarkten Bolsward B.V.\nKooistra Supermarkten Bolsward B.V.\nKrasnapolsky Hotels & Restaurants N.V.\nKruitbosch Cycle Universe Holding B.V.\nKruitbosch Zwolle B.V.\nKwantum B.V.\nKwantum B.V.\nKwantum Holding B.V.\nL'Oréal Nederland B.V.\nLACTALIS NEDERLAND B.V.\nLagardère Travel Retail the Netherlands B.V.\nLEGO Nederland B.V.\nLEGO Nederland B.V.\nLekkerland Beheer N.V.\nLeolux Furniture Group B.V.\nLG Electronics Benelux Sales B.V.\nLidl\nLivera B.V.\nLivera B.V.\nLivit Orthopedie\nLouis Vuitton B.V.\nLouis Vuitton B.V.\nLouwman MB B.V.\nLucas Bols B.V.\nLuxottica The Netherlands B.V.\nMAAZ Cheese B.V.\nMAAZ Dairy Foods Group B.V.\nMakita Nederland B.V.\nMantel Arnhem B.V.\nMarc O'Polo Einzelhandels GmbH Dutch branch\nMarc O'Polo Einzelhandels GmbH Dutch branch\nMars Food Europe B.V.\nMars Nederland\nMattel Europa B.V.\nMaxeda DIY B.V.\nMaxeda DIY Group B.V.\nMediaMarkt Nederland\nMediq Groep\nMediq Top Holding B.V.\nMepal B.V.\nMepal B.V.\nMercedes-Benz Nederland B.V.\nMeyra Retail & Services B.V.\nMGA Entertainment (Netherlands) B.V.\nMichelin Nederland N.V.\nMichelin Nederland N.V.\nMicrosoft B.V.\nMiele Nederland B.V.\nMiele Nederland B.V.\nMirage Retail Group B.V.\nMitsubishi Motor Sales Nederland B.V.\nMitsubishi Motors Europe B.V.\nMoba Group B.V.\nMoet Hennessy (Nederland) B.V.\nMondelez Nederland B.V.\nMosa Holding B.V.\nMulberry Company (Sales) Limited\nMulberry Company (Sales) Limited\nMy Jewellery B.V.\nMy Jewellery B.V.\nNature's Pride B.V.\nNelson Schoenen B.V.\nNelson Schoenen B.V.\nNespresso Nederland B.V.\nNespresso Nederland B.V.\nNestlé Nederland B.V.\nNETTORAMA GROEP B.V.\nNettorama Merkendiscount B.V.\nNew York Pizza Management B.V.\nNEW YORKER Nederland B.V.\nNEW YORKER Nederland B.V.\nNIKE 360 Holding B.V.\nNIKE Retail\nNL Phonedeal B.V.\nNRGValue Tankstations Nederland B.V.\nNUNA International B.V.\nO'Neill Europe B.V.\nO'Neill Europe B.V.\nObelink Vrijetijdsmarkt B.V.\nObelink Vrijetijdsmarkt B.V.\nOmoda Holding B.V.\nONE Retail B.V.\nONLY Stores Holland B.V.\nOtto B.V.\nPatagonia Europe Coöperatief U.A.\nPatagonia Europe Coöperatief U.A.\nPaul Retail B.V.\nPeek & Cloppenburg Holding B.V.\nPepe Jeans Europe B.V.\nPepe Jeans Europe B.V.\nPetrol Industries B.V.\nPetrol Industries B.V.\nPets Place Boerenbond Retail B.V.\nPets Place Boerenbond Retail B.V.\nPicnic B.V.\nPicnic Nederland B.V.\nPlato B.V.\nPlieger B.V.\nPLUS Supermarkten B.V.\nPoiesz Beheer B.V.\nPoiesz Supermarkten B.V.\nPorsche Centrum Gelderland\nPorsche Centrum Twente\nPouw Dealer\nPrimark Netherlands B.V.\nProfile International N.V.\nPromessa\nPVH Brands Netherlands B.V.\nPVH Brands Netherlands B.V.\nQuooker International B.V.\nRanzijn tuin & dier B.V.\nRanzijn tuin & dier B.V.\nREV'IT! SPORT INTERNATIONAL B.V.\nREV'IT! SPORT INTERNATIONAL B.V.\nRicoh\nRituals Cosmetics Enterprise B.V.\nROSSMANN CENTRAL EUROPE B.V.\nRoyal Canin Nederland B.V.\nSamsung Electronics Benelux B.V.\nSchaap en Citroen B.V.\nSchoonenberg Hoorcomfort\nSchuurman Schoenen B.V.\nSeats and Sofas B.V.\nSelecta Netherlands B.V.\nShimano Benelux B.V.\nShoeby-Shop B.V.\nSissy-Boy B.V.\nSixt B.V.\nSkechers USA Benelux B.V.\nSkechers USA Benelux B.V.\nSlagerij Kaldenberg B.V.\nSlagerij Kaldenberg B.V.\nSligro Food Group N.V.\nSnowWorld B.V.\nSolar Nederland B.V.\nSolarToday Franchise B.V.\nSolarToday Franchise B.V.\nSoLow\nSoLow\nSonos Europe B.V.\nSony Interactive Entertainment Benelux B.V.\nSpar Holding B.V.\nSpecialized Europe B.V.\nSpecialized Europe B.V.\nSports Unlimited Retail B.V.\nStage Entertainment Holding B.V.\nStaples Nederland B.V.\nStaples Nederland B.V.\nStationsfoodstore\nStationsfoodstore\nStella Fietsen Holding B.V.\nSteve Madden Europe B.V.\nSteve Madden Europe B.V.\nStichting Wereldwinkel Aalsmeer\nStichting Wereldwinkel Arnhem-Velp\nStichting Wereldwinkel Beverwijk\nStichting Wereldwinkel Leidschendam-Voorburg\nStichting Wereldwinkel Ommen\nStichting Wereldwinkel Venray\nSuit Supply\nSuit Supply\nSvendsen Sport\nSwinkels Family Brewers\nSwiss Sense B.V.\nSwiss Sense B.V.\nTakko Nederland B.V.\nTamoil Nederland B.V.\nTer Stal Textiel B.V.\nTer Stal Textiel B.V.\nThe Phone House Netherlands B.V.\nThe Phone House Netherlands B.V.\nThe Sting B.V.\nThe Sting B.V.\nThe Walt Disney Company (Benelux) B.V.\nTimber and Building Supplies Holland N.V.\nTIP Trailer Services Netherlands B.V.\nTK Home Solutions B.V.\nTK Maxx\nTomTom Sales B.V.\nToolstation Europe B.V.\nTotalEnergies Marketing Nederland N.V.\nTP-LINK Enterprises Netherlands B.V.\nTransityre B.V.\nTuindeco Topco B.V.\nUbbink Garden B.V.\nUnder Armour Europe B.V.\nUrban Spa Beauty Junkies\nVan den Ban Autobanden B.V.\nVan Eerd Beheer B.V.\nVan Loon Retail & Foodservice B.V.\nVan Mossel Dealer Groep Nederland B.V.\nVan Oers United B.V.\nVan Tilburg Mode en Sport B.V.\nVan Tilburg Mode en Sport B.V.\nVANMOOF Global Holding\nVegro Verpleegartikelen B.V.\nVepa, the furniture factory\nVida XL B.V.\nViking Direct\nVodafone Libertel B.V.\nVolvo Car Nederland B.V.\nVolvo Group Truck Center B.V.\nVomar Holding B.V.\nVos Supermarkten Holding B.V.\nVVV Cadeaubonnen B.V.\nWelkoop Retail B.V.\nWensink Automotive B.V.\nWereldwinkel Amersfoort\nWereldwinkel Appingedam\nWereldwinkel Bergen NH\nWereldwinkel Berkel en Rodenrijs\nWereldwinkel Breda\nWereldwinkel Breukelen\nWereldwinkel Doetinchem\nWereldwinkel Dordrecht\nWereldwinkel Dronten\nWereldwinkel Epe\nWereldwinkel Maassluis\nWereldwinkel Pijnacker\nWereldwinkel Sassenheim\nWereldwinkel Tilburg\nWereldwinkel Varsseveld\nWereldwinkel Waalwijk\nWereldwinkel Zoetermeer\nWestCord Hotels B.V.\nWibra Supermarkt B.V.\nWibra Supermarkt B.V.\nWittebrug\nWittebrug (Wittebrug Autobedrijven)\nWitzand Bouwmaterialen B.V.\nWürth-Nederland B.V.\nXenos B.V.\nXenos B.V.\nXiaomi Technology Netherlands B.V.\nXXL Group B.V.\nXXL Nutrition B.V.\nYamaha Motor Europe N.V.\nYanmar Europe B.V.\nYoung Living Europe B.V.\nYourSurprise.com\nYourSurprise.com\nZara\nZara\nZeeman Groep B.V.\nZeeuw & Zeeuw FordStore Utrecht\nZeeuw & Zeeuw FordStore Utrecht\nZeeuw & Zeeuw Kia\nZeeuw & Zeeuw Renault\nnexeye B.V.\nPathé Theatres B.V.\nHornbach Bouwmarkt Nederland B.V.\nMcDonald’s Nederland B.V.\nDomino’s Pizza Netherlands B.V.\nNew York Pizza B.V.\nQ Park Operations Netherlands B.V.\nP1 Parking Nederland B.V.\nInterparking Nederland B.V.\nBrainWash Kappers B.V.\nCosmo Hairstyling B.V.\nAMI Kappers B.V.\nIKEA B.V. (NL retailentiteit, exacte naam via CI)\nDecathlon Nederland B.V.\nTeam Kappers B.V.\nKinki Kappers B.V.\nAPCOA PARKING Nederland B.V.\nLoetje Groep B.V.\nVan der Valk Services B.V. / Hotels & Restaurants (kies juiste entiteit in CI)\nJohnny’s Burger Company B.V.\nKFC Netherlands B.V.\nBlokker B.V.\nBig Bazar B.V.\nXenos B.V.\nWibra B.V.\nLeen Bakker B.V.\nKwantum B.V.\nC&A Nederland B.V.\nHunkemöller International B.V.\nLivera B.V.\nSacha Schoenen B.V.\nScapino B.V.\nSiebel Juweliers B.V.\nSchaap en Citroen B.V.\nMy Jewellery B.V.\nIntratuin Holding B.V.\nDA Drogerij Service B.V.\nSoLow B.V.\nMR MARVIS Netherlands B.V.\nde Bijenkorf\nDirk van den Broek\nGall & Gall\nHANOS Internationale Horeca Groothandel\nBeter Bed\nfonQ\nWehkamp Retail Group\nOtrium\nPlein.nl\n\nTuinland\nAlbron\nBagels & Beans\nFEBO\nDudok Horeca Groep\nPoké Perfect\nMr. Sushi Nederland\nt Zusje\ncitizenM hotels\nCorendon\nThe Social Hub\nThe Hoxton\nThe Usual Hotels\nSportCity\nOGER\nPauw\nPatta\nKing Louie\nYAYA\nLABFRESH\nEqualité\nVanMoof\nVELORETTI\nEuromaster Nederland\nTony's Chocolonely\nMarie-Stella-Maris\nFish Tales\nRoyal Swinkels\n\nOger\nNolson\ndaily paper\nYAYA\nStudio anneloes\ndenham\nwefashion\nFloris van bommel\nVanLier\nkarwei\nsuperkeukens\ndebijenkorf\nbruna\nbuzzbee\nkeurslager\nAudax\nBeterBed Holding B.V\nCool Investments\nEK Retail group\nInternationale meubel groep\nJOG Group\nUnited Retail\nTermeer Schoenen\nVan Uffelen Group\nZiengs Group\nOtrium\nFEBO\nAce & Tate (fysieke winkels NL + internationaal)\nAmac (Apple Premium Reseller) (meerdere fysieke stores)\nAthenaeum Boekhandel (meerdere locaties)\nBax Music (megastores + omnichannel)\nBurned Sports (fysieke winkels)\nEK Retail (retailorganisatie met aangesloten winkels)\nFat Phill’s (groeiende fastfood keten)\nFleurop (fysieke bloemisten netwerk)\nFOUR Amsterdam (multi-store fashion)\nGielen Lederwaren (meerdere winkels)\nJust Brands (PME, Cast Iron retailstores)\nKing Louie (eigen winkels)\nKipperij (meerdere vestigingen)\nKookhuis (fysieke winkels)\nLobbes Speelgoed (winkel + omnichannel)\nMAGIC Bodyfashion (retail + wholesale maar ook D2C)\nMantel (fietswinkels + omnichannel)\nMooie Boules (meerdere locaties horeca leisure)\nPassaSports (retailformule)\nPiercing Mania (fysieke shops)\nPoké&ZO (meerdere vestigingen)\nPower Supplements (retailformule)\nSahan Supermarkten (supermarktketen)\nSensi Seeds (shops in NL)\nSkins (SKINS Cosmetics) (meerdere stores)\nt Zusje (restaurantketen)\nThe Seafood Bar (meerdere locaties)\nThe Tosti Club (keten)\nThings I Like Things I Love (retail)\nTony’s Chocolonely (flagship retail)\ntotaalBED (meerdere winkels)\nUsed Products (grote franchiseformule)\nVan Asten Babysuperstore (grote fysieke winkel + mogelijk uitbreiding)\nVascobelo (meerdere vestigingen)\nVELORETTI (brand stores)\nWarenhuis Vanderveen (groot warenhuis)\nYoYo! Fresh Tea Bar (meerdere locaties)\nZielinski & Rozen (retail presence)\nZusss (eigen winkels)\n10DAYS (beperkte fysieke presence)\nAthenaeum (kleiner maar stabiel)\nBOB Autowas (multi locatie maar lagere IT-complexiteit)\nBandenConcurrent (fysiek + online)\nBeerens Group (automotive retail)\nBroekhuis Groep (auto retail groot)\nDusseldorp BMW MINI\nEuromaster Nederland\nFalcon Carwash\nHedin Automotive NL\nHuijink Mobility Group\nKooijman Autogroep\nKwikFit (zeer interessant, maar corporate)\nLouwman Group (groot, complex)\nMengelers Automotive\nMunsterhuis\nProfile (fietsformule)\nSpuigroep (tankstations + retail)\nVallei Auto Groep\nVan Mossel Automotive Group (zeer groot)\nWassink Autogroep\nWestfalia Campercentrum\nZeekr Europe (nieuw retailconcept)\nKwalitaria\nSubway\nFive guys\nWehkamp\nExpert\nDreamland\nUniqlo\nLucardi\nC&A\nWibra\nState of Art\nVanHaren (Schoenen)\nOmoda\nBever (outdoor)\nXenos\nFlying Tiger\nLeen Bakker\nKwantum\nPon Automotive\nGents\nSuitable\nJysk\nMaxeda DIY Group\nIntratuin\nPicnic\nSonos\nShimano\nWehkamp\nEspirit\nPearle\nRivera Maison\nDouglas\nHeineken\nOtto Group\nCameranu\nThe Magnum Ice Cream Company\nUnited Soft Drinks\nStach\nBeterhoren\nTacomundo\nVlaams broodhuys\nVan der valk\nBroodje ben\nThe society shop\nPetit bateaut\nSimon meijssen\nJoe & the juice\nMarie stella maris\nWakuli\nPauw\nGrapedistrict\nSoap\nDe pizzabakkers\nX2o badkamers\nDe echte bakker\nZonnestudio\nRob peetoom\nPhonehouse\nLivera\n\n"
+
+          # Sources that are not acceptable evidence for this radar.
+          BLOCKED_DOMAINS = [
+              "wikipedia.org", "facebook.com", "instagram.com", "tiktok.com", "youtube.com", "youtu.be",
+              "pinterest.", "reddit.com", "x.com", "twitter.com", "marktplaats.nl", "2dehands.be"
           ]
-          
-          RETAIL_FIT_TERMS = [
-              "retail", "winkel", "winkels", "supermarkt", "supermarkten", "markt", "bouwmarkt", "tuin", "dier",
-              "horeca", "restaurant", "pizza", "burger", "hotel", "hotels", "theatres", "pathé", "parking", "park",
-              "automotive", "dealer", "dealer group", "fietsen", "schoenen", "fashion", "mode", "wonen", "bed", "keukens",
-              "drog", "pharmacy", "apotheek", "optiek", "hoor", "fitness", "travel", "leisure", "e-commerce", "shop",
-              "bouwmaterialen", "doe-het-zelf", "diy", "kappers", "carwash", "tankstations", "foodservice", "groothandel",
+
+          # Non-opportunity themes. These can contain words like "fusie" or "verkoop" but are not IT-landscape signals.
+          NOISE_TERMS = [
+              "melkprijs", "grondstofprijs", "prijs", "prijzen", "aanbieding", "aanbiedingen", "folder", "folders", "korting", "sale",
+              "product kopen", "bestel direct", "shop nu", "assortiment", "catalogus", "openingstijden", "klantenservice",
+              "speaker", "speakers", "soundbar", "soundbars", "koptelefoon", "wasmachine", "televisie", "reviews", "review",
+              "recept", "consument", "consumenten", "winactie", "campagne", "kerstafdeling", "black friday"
           ]
-          
-          ALWAYS_RETAIL_BRANDS = {
-              "ranzijn tuin & dier b.v.", "tuinland", "karwei", "gamma", "intergamma b.v.", "hema b.v.", "xenos b.v.",
-              "kwantum b.v.", "leen bakker b.v.", "jysk b.v.", "coolblue b.v.", "bruna b.v.", "action holding b.v.",
-              "koninklijke ahold delhaize n.v.", "koninklijke jumbo food groep b.v.", "picnic b.v.", "picnic nederland b.v.",
-              "plus supermarkten b.v.", "dirk van den broek", "gall & gall", "de bijenkorf", "debijenkorf",
-              "intratuin holding b.v.", "intratuin trade & logistics b.v.", "welkoop retail b.v.", "pets place boerenbond retail b.v.",
-              "mediaMarkt Nederland".lower(), "beter bed", "beterbed holding b.v", "fonq", "wehkamp", "wehkamp retail group",
-              "hornbach bouwmarkt nederland b.v.", "maxeda diy group", "maxeda diy group b.v", "maxeda diy b.v.", "praxis",
-          }
-          
-          @dataclass
-          class Company:
-              name: str
-              canonical: str
-              monitor_mode: str  # target | context
-              fit_reason: str
-              aliases: List[str]
-          
-          
-          def clean_company_name(s: str) -> str:
-              s = norm_space(s)
-              if not s or s.lower() == "organisatie":
-                  return ""
-              # Drop explanatory parentheticals that were added in the raw list.
-              s = re.sub(r"\s*\([^)]*exacte naam[^)]*\)", "", s, flags=re.I)
-              s = re.sub(r"\s*\([^)]*kies juiste entiteit[^)]*\)", "", s, flags=re.I)
-              return norm_space(s)
-          
-          
-          def canonicalize_company(s: str) -> str:
-              x = lower(clean_company_name(s))
-              # Normalize a few common legal suffix differences, but don't over-destroy brand names.
-              x = x.replace("b.v", "bv").replace("n.v", "nv")
-              x = re.sub(r"\bholding\b", "", x)
-              x = re.sub(r"\s+", " ", x).strip(" .-/")
-              return x
-          
-          
-          def infer_monitor_mode(name: str) -> Tuple[str, str]:
-              n = lower(name)
-              if n in ALWAYS_RETAIL_BRANDS:
-                  return "target", "explicit retail/consumer-services brand"
-              if contains_phrase(n, RETAIL_FIT_TERMS):
-                  return "target", "name indicates retail/consumer services"
-              if contains_phrase(n, NON_TARGET_CONTEXT_TERMS):
-                  return "context", "supplier/manufacturer/vendor; only direct IT signals allowed"
-              # Default: target because the user list is intended as retail/consumer universe, but M&A must still pass stricter evidence.
-              return "target", "from user-provided target universe"
-          
-          
-          def build_companies(raw: str) -> List[Company]:
-              seen: Dict[str, Company] = {}
-              for line in raw.splitlines():
-                  name = clean_company_name(line)
-                  if not name:
-                      continue
-                  can = canonicalize_company(name)
-                  if not can:
-                      continue
-                  mode, reason = infer_monitor_mode(name)
-                  if can not in seen:
-                      seen[can] = Company(name=name, canonical=can, monitor_mode=mode, fit_reason=reason, aliases=[])
-                  else:
-                      if name not in seen[can].aliases and name != seen[can].name:
-                          seen[can].aliases.append(name)
-                      if seen[can].monitor_mode == "context" and mode == "target":
-                          seen[can].monitor_mode = "target"
-                          seen[can].fit_reason = reason
-              return list(seen.values())
-          
-          # ----------------------------- Rules -----------------------------
-          
-          BANNED_DOMAINS = [
-              "wikipedia.org", "facebook.com", "instagram.com", "tiktok.com", "youtube.com", "pinterest.", "amazon.",
+          GENERIC_PAGE_TERMS = ["over ons", "about us", "homepage", "home", "contact", "locaties", "winkels", "vestigingen", "werken bij", "careers", "carriere", "carrière"]
+          SINGLE_LOCATION_TERMS = ["winkel in ", "vestiging in ", "franchisenemer gezocht", "ter overname:", "ter overname", "exploitant gezocht", "lokale winkel", "single store"]
+          SCALE_TERMS = ["alle vestigingen", "meerdere vestigingen", "vestigingen", "winkels", "retailketen", "keten", "formule", "formules", "hoofdkantoor", "locaties", "multi-site", "landelijk", "internationaal", "groep"]
+          FINANCIAL_ONLY_TERMS = ["eigen overname", "leent", "leende", "lening", "schuld", "aandeelhouder", "aandeelhouders", "financiering", "rente", "obligatie", "miljoen voor", "trump", "tata steel"]
+
+          IT_ROLES = [
+              "business analyst", "business analist", "informatie analist", "informatieanalist", "functioneel analist", "functional analyst",
+              "data analyst", "data analist", "data engineer", "analytics engineer", "data architect", "enterprise architect", "solution architect",
+              "solutions architect", "integration architect", "integratie architect", "cloud architect", "platform engineer", "software engineer",
+              "product owner pos", "product owner checkout", "product owner kassa", "product owner omnichannel", "product owner e-commerce",
+              "product owner ecommerce", "product owner loyalty", "product owner data", "erp lead", "sap lead", "sap consultant", "s/4hana consultant",
+              "d365 consultant", "dynamics consultant", "salesforce consultant", "servicenow consultant", "it project manager", "projectmanager it",
+              "program manager it", "programma manager it", "transformation manager it", "data transformation", "data transformatie",
+              "digital transformation lead", "applicatiebeheerder", "applicatie manager", "it manager", "it director", "head of it", "head of technology",
+              "head of data", "head of digital", "ai lead", "ml engineer", "platform owner", "scrum master"
           ]
-          
-          BANNED_URL_PARTS = [
-              "/wiki/", "/product/", "/producten/", "/p/", "/aanbiedingen", "/folder", "/folders", "/shop/",
-              "/assortiment/", "/webshop/", "/categorie/", "/category/", "/product-overview/",
-          ]
-          
-          CONSUMER_NOISE_PHRASES = [
-              "melkprijs", "prijs", "prijzen", "folder", "aanbieding", "aanbiedingen", "korting", "kopen", "bestel direct",
-              "bestellen", "assortiment", "grote assortiment", "collectie", "keukenapparaten", "speakers", "soundbars", "soundbases",
-              "openingstijden", "winkelwagen", "webshop", "review", "reviews", "sale", "outlet", "cadeaukaart", "recept",
-              "deze week", "product kopen", "haal op", "consumenten", "klanten krijgen korting", "verkoop van meubels",
-          ]
-          
-          GENERIC_PAGE_PHRASES = [
-              "over ons", "over coolblue", "over hema", "werken bij", "vacatures & carrière", "vacatures en carrière",
-              "careers", "carriere", "home", "homepage", "contact", "locaties", "winkels", "folder", "aanbiedingen",
-          ]
-          
-          IT_ROLE_TERMS = [
-              "business analyst", "business analist", "informatieanalist", "informatie analist", "data analyst", "data analist",
-              "data engineer", "analytics engineer", "bi specialist", "power bi", "data scientist", "machine learning engineer",
-              "enterprise architect", "solution architect", "integratie architect", "integration architect", "cloud architect",
-              "security architect", "iam specialist", "identity access", "product owner pos", "product owner kassa",
-              "product owner checkout", "product owner omnichannel", "product owner ecommerce", "product owner e-commerce",
-              "product owner data", "product owner crm", "product owner loyalty", "scrum master", "agile coach",
-              "erp lead", "sap lead", "sap consultant", "sap program", "sap programme", "program manager erp",
-              "programma manager erp", "program manager digital", "programma manager digital", "digital transformation manager",
-              "data transformation", "transformation lead", "it project manager", "projectmanager it", "it manager",
-              "head of it", "it director", "cio", "cto", "chief information officer", "chief technology officer",
-              "chief digital officer", "chief data officer", "chief data & ai officer", "chief ai officer", "cdao", "head of data",
-              "head of digital", "head of technology", "director technology", "technology director", "head of architecture",
-          ]
-          
-          LEADERSHIP_IT_TERMS = [
-              "cio", "cto", "chief information officer", "chief technology officer", "chief digital officer", "chief data officer",
-              "chief data & ai officer", "chief ai officer", "cdao", "head of data", "head of digital", "head of technology",
-              "it director", "director technology", "technology director", "head of it", "head of architecture",
-          ]
-          
-          LEADERSHIP_EVENT_TERMS = [
-              "benoemd", "aangesteld", "gestart", "start als", "treedt aan", "joins", "appointed", "named", "started as",
-              "vertrekt", "stapt op", "neemt afscheid", "opvolger", "new", "nieuwe", "nieuwe cio", "nieuwe cto", "nieuwe cdo",
-          ]
-          
-          # General CEO/COO only with explicit digital context and lower priority.
-          GENERAL_LEADER_TERMS = ["ceo", "coo", "cfo", "chief executive officer", "chief operating officer"]
-          
+          JOB_TERMS = ["vacature", "vacatures", "gezocht", "zoekt", "hiring", "we are hiring", "job", "jobs", "werken bij", "join our team", "career", "careers", "recruitment"]
           IT_LANDSCAPE_TERMS = [
-              "pos", "point of sale", "kassa", "kassasysteem", "checkout", "self checkout", "self-checkout", "scan & go",
-              "erp", "sap", "s/4hana", "sap s/4hana", "oracle", "dynamics 365", "microsoft dynamics", "netsuite",
-              "crm", "salesforce", "service cloud", "commerce cloud", "customer data platform", "cdp", "loyalty platform",
-              "wms", "warehouse management", "tms", "transport management", "oms", "order management", "pim", "mdm", "master data",
-              "data platform", "data lake", "data lakehouse", "databricks", "snowflake", "power bi", "data governance",
-              "data migration", "applicatie rationalisatie", "application rationalization", "applicatielandschap", "it landschap",
-              "cloud migration", "cloud migratie", "azure", "aws", "google cloud", "gcp", "api", "integratieplatform",
-              "integration platform", "middleware", "iam", "identity access management", "cybersecurity", "datalek", "ransomware",
-              "retail media platform", "omnichannel platform", "e-commerce platform", "commerce platform", "app modernization",
+              "pos", "point of sale", "kassa", "kassasysteem", "checkout", "self checkout", "scan & go", "erp", "sap", "s/4hana", "dynamics 365", "d365",
+              "oracle", "salesforce", "servicenow", "databricks", "snowflake", "data platform", "dataplatform", "customer data platform", "cdp", "crm",
+              "wms", "tms", "warehouse management", "transport management", "cloud migration", "cloud migratie", "azure", "aws", "google cloud",
+              "api", "integratie", "integrations", "applicatielandschap", "application landscape", "application rationalization", "applicatie rationalisatie",
+              "legacy", "modernisering", "platform", "omnichannel platform", "commerce platform", "loyalty platform", "retail media", "mulesoft", "boomi"
           ]
-          
-          TRANSFORMATION_TERMS = [
-              "digitale transformatie", "digital transformation", "data transformatie", "data transformation", "it transformatie",
-              "platformtransformatie", "platform transformation", "modernisering", "modernization", "migratie", "migration",
-              "implementatie", "implementation", "rollout", "uitrol", "vervanging", "replacement", "harmonisatie", "harmonization",
-              "rationalisatie", "consolidatie", "consolidation", "integratie", "integration", "target operating model",
-          ]
-          
-          PROGRAM_VERBS = [
-              "start", "started", "lanceert", "launch", "rollout", "rolt uit", "implementeert", "implements", "migreert",
-              "migrates", "vervangt", "replaces", "selecteert", "selects", "kiest voor", "partners with", "samenwerking met",
-              "bouwt", "builds", "gaat live", "go-live", "transformation programme", "transformatieprogramma", "programma",
-          ]
-          
-          JOB_CONTEXT_TERMS = ["vacature", "vacatures", "hiring", "zoekt", "gezocht", "recruitment", "job", "jobs", "werken bij"]
-          
-          MNA_TERMS = [
-              "overname", "overgenomen", "neemt over", "acquisition", "acquired", "fusie", "merger", "merge", "gaat samen",
-              "samen verder", "verkoopt alle vestigingen", "verkocht aan", "nieuwe eigenaar", "carve-out", "carve out",
-          ]
-          
-          MNA_QUALIFIERS = [
-              "alle vestigingen", "vier vestigingen", "meerdere vestigingen", "keten", "formule", "formuletransplantatie", "hoofdkantoor",
-              "merkconsolidatie", "samen verder", "één merk", "een merk", "retailketen", "winkelketen", "franchiseformule",
-              "parken", "hotels", "restaurants", "bouwmarkten", "supermarkten", "vestigingen", "stores", "locations",
-          ]
-          
-          MNA_FALSE_POSITIVE_TERMS = [
-              "melkprijs", "prijs", "familie van eerd", "leent", "lening", "60 miljoen", "trump", "tata steel", "winkel in",
-              "ter overname: bruna winkel", "ter overname", "consumenten", "aandelenkoers", "beurs", "financiering",
-          ]
-          
-          VENDOR_TERMS = [
-              "sap", "s/4hana", "salesforce", "microsoft dynamics", "dynamics 365", "serviceNow".lower(), "oracle", "workday",
-              "databricks", "snowflake", "azure", "aws", "google cloud", "manhattan", "blue yonder", "adyen", "worldline",
-              "ncr", "gk software", "cegid", "lightspeed", "shopify", "commercetools", "sap commerce", "magento", "adobe commerce",
-          ]
-          
-          TENDER_TERMS = ["tender", "rfp", "aanbesteding", "tenderned", "eu tender", "marktconsultatie", "request for proposal"]
-          
-          SECURITY_EVENT_TERMS = ["datalek", "ransomware", "cyberaanval", "cyber attack", "security incident", "data breach", "hack"]
-          
-          LINKEDIN_DOMAINS = ["linkedin.com"]
-          LINKEDIN_POST_HINTS = ["/posts/", "/feed/update", "activity-", "linkedin.com/posts", "linkedin.com/feed"]
-          LINKEDIN_PROFILE_HINTS = ["linkedin.com/in/"]
-          LINKEDIN_JOB_HINTS = ["linkedin.com/jobs", "/jobs/"]
-          
-          # ----------------------------- Input item model -----------------------------
-          
-          @dataclass
-          class RawItem:
-              company: str
-              title: str
-              snippet: str
-              url: str
-              source_type: str
-              published: str = ""
-              person: str = ""
-              role: str = ""
-          
-          @dataclass
-          class Decision:
-              accepted: bool
-              category: str
-              score: int
-              confidence: str
-              evidence: List[str]
-              reject_reason: str
-              cgi_angle: str
-              action: str
-              why: str
-              source_quality: str
-          
-          # ----------------------------- Classification -----------------------------
-          
-          CATEGORY_META = {
-              "IT vacature / capability build-up": {
-                  "why": "Een specifieke IT-/data-/transformatie-vacature is een direct bewijs dat het account capaciteit bouwt rond het IT-landschap.",
-                  "cgi": "Business analysis, product ownership, data engineering, architecture, ERP/POS-programmaondersteuning, delivery squads en managed services.",
-                  "action": "Check of er meerdere rollen rond hetzelfde thema ontstaan en koppel dit aan één concrete CGI-capability.",
-              },
-              "IT/Digital leadership change": {
-                  "why": "Een nieuwe CIO/CTO/CDO/Head of Data/Digital/IT kan binnen 100 dagen een nieuwe IT- of dataroadmap vormen.",
-                  "cgi": "Executive briefing, IT-landscape assessment, data/AI roadmap, architecture review, programme assurance en delivery-capaciteit.",
-                  "action": "Maak een stakeholderbrief: rol, mandaat, eerste 100 dagen, vermoedelijke thema's en warme ingang.",
-              },
-              "Expliciete IT-/data-/platformtransformatie": {
-                  "why": "Er is concrete tekst over vernieuwing, migratie, implementatie, rollout of harmonisatie van een IT-/data-/platformonderdeel.",
-                  "cgi": "Roadmap, solution architecture, cloud/data/integration delivery, testing, migration, change en managed services.",
-                  "action": "Valideer scope, timing en bestaande partnerlandschap; bereid een inhoudelijke point-of-view voor.",
-              },
-              "Vendor/platform-keuze": {
-                  "why": "Een gekozen platform of vendor leidt vaak tot integratie, migratie, governance, testing en change-vraagstukken.",
-                  "cgi": "Vendor-agnostische integratie, data migration, programme assurance, test automation, cloud/security en run/managed services.",
-                  "action": "Map de gekozen technologie en maak een hypothese waar implementatiecomplexiteit ontstaat.",
-              },
-              "Qualified M&A / formule-integratie": {
-                  "why": "Een keten-, formule- of multi-site overname kan leiden tot POS-, ERP-, finance-, voorraad-, masterdata- en rapportage-integratie.",
-                  "cgi": "Post-merger IT integration, application rationalization, data migration, ERP/POS/CRM-harmonisatie en integratie-architectuur.",
-                  "action": "Gebruik dit niet als harde claim maar als validatiehaak: welke systemen, processen en data moeten worden geharmoniseerd?",
-              },
-              "IT tender / procurement": {
-                  "why": "Een IT-tender of RFP is een concreet inkoopmoment rond het IT-landschap.",
-                  "cgi": "Bid qualification, solution shaping, architecture, delivery model, transition planning en managed services.",
-                  "action": "Direct bid/no-bid bepalen en partnerlandschap in kaart brengen.",
-              },
-              "Security/compliance IT-event": {
-                  "why": "Een concreet security- of compliance-incident creëert urgentie voor IAM, monitoring, remediation en governance.",
-                  "cgi": "Cyber assessment, IAM, SOC/MDR, cloud security, remediation en security governance.",
-                  "action": "Benader voorzichtig en waardegericht rond continuïteit, risico en maturity.",
-              },
+          CHANGE_TERMS = ["transformatie", "transformation", "migratie", "migration", "implementeert", "implementatie", "implementation", "rollout", "uitrol", "vervangt", "vervanging", "selecteert", "kiest", "gekozen", "gaat live", "livegang", "programma", "program", "harmonisatie", "rationalisatie", "integratie"]
+          LEADERSHIP_ROLES = ["cio", "cto", "chief information officer", "chief technology officer", "chief digital officer", "chief data officer", "chief data & ai officer", "chief data and ai officer", "chief ai officer", "chief transformation officer", "head of data", "head of digital", "head of technology", "head of it", "it director", "digital director", "data director", "director technology"]
+          LEADERSHIP_EVENTS = ["benoemd", "aangesteld", "nieuwe", "nieuw", "start", "gestart", "begint", "treedt aan", "joins", "joined", "appointed", "named", "starts", "started", "vertrekt", "departure", "steps down", "opvolger", "successor", "promoted"]
+          MA_TERMS = ["overname", "overgenomen", "neemt over", "genomen over", "fusie", "fuseren", "gaat samen", "samengaan", "merger", "acquisition", "acquired", "neemt alle", "verkoopt alle vestigingen", "koopt", "formuletransplantatie"]
+          TENDER_TERMS = ["tender", "rfp", "aanbesteding", "marktconsultatie", "request for proposal"]
+          SECURITY_TERMS = ["ransomware", "datalek", "cyberaanval", "cyber attack", "security incident", "iam", "identity and access", "zero trust", "soc", "iso 27001"]
+
+          STRONG_NEWS_DOMAINS = ["fd.nl", "retailtrends.nl", "retaildetail", "twinklemagazine", "emerce.nl", "distrifood", "mena.nl", "consultancy.nl", "mt/sprout", "mtsprout", "nos.nl", "nu.nl", "cfo.nl", "rtv", "wonen360.nl", "fashionunited", "foodpersonality", "automotive-online"]
+          JOB_DOMAINS = ["werkenbij", "careers", "jobs", "vacatures", "linkedin.com/jobs", "indeed", "greenhouse", "lever.co", "recruitee", "smartrecruiters"]
+          SOURCE_ONLY_NAMES = ["microsoft", "samsung", "lg electronics", "sony", "sonos", "dyson", "tp-link", "ricoh", "xiaomi", "miele", "bosch", "bsh", "garmin", "shimano", "makita", "yamaha", "lego", "mattel", "coca-cola", "heineken", "diageo", "l'oreal", "estee lauder", "colgate", "ferrero", "mondelez", "mars nederland", "nestle", "royal canin", "bridgestone", "goodyear", "michelin"]
+
+          MANUAL_ALIASES = {
+              "koninklijke ahold delhaize": ["Ahold Delhaize", "Albert Heijn", "AH", "AH.nl", "Etos"],
+              "koninklijke jumbo food": ["Jumbo", "Jumbo Supermarkten"],
+              "as watson": ["Kruidvat", "Trekpleister", "AS Watson"],
+              "intergamma": ["Intergamma", "Gamma", "Karwei"],
+              "maxeda diy": ["Maxeda", "Praxis"],
+              "homefashion": ["Leen Bakker", "Kwantum", "Homefashion Group"],
+              "de mandemakersgroep": ["Mandemakers", "Keuken Kampioen", "KeukenConcurrent", "Brugman", "Montel", "Sanidirect"],
+              "nexeye": ["nexeye", "Pearle", "Eye Wish", "GrandVision"],
+              "ranzijn tuin dier": ["Ranzijn", "Ranzijn Tuin & Dier"],
+              "tuinland": ["Tuinland"],
+              "hema": ["HEMA"],
+              "coolblue": ["Coolblue"],
+              "jysk": ["JYSK"],
+              "louwman": ["Louwman", "Louwman Group"],
+              "van mossel": ["Van Mossel", "Van Mossel Automotive Group"],
+              "pets place boerenbond": ["Pets Place", "Boerenbond"],
+              "lagardere travel": ["Lagardere Travel Retail", "Lagardère Travel Retail"],
+              "albron": ["Albron"],
+              "stach": ["STACH"],
+              "la place": ["La Place"],
+              "the sting": ["The Sting", "Costes", "Cotton Club"],
           }
-          
-          
-          def source_quality(item: RawItem) -> Tuple[bool, str]:
-              d = url_domain(item.url)
-              u = lower(item.url)
-              text = lower(item.title + " " + item.snippet)
-              if any(b in d for b in BANNED_DOMAINS):
-                  return False, "banned source domain (Wikipedia/social/product/consumer source)"
-              if any(part in u for part in BANNED_URL_PARTS) and not has_word(text, IT_ROLE_TERMS + IT_LANDSCAPE_TERMS):
-                  return False, "consumer/product URL without concrete IT evidence"
-              # Homepage/generic pages are allowed only if they contain an explicit IT role or platform program.
-              if contains_phrase(text, GENERIC_PAGE_PHRASES) and not (has_word(text, IT_ROLE_TERMS) or (has_word(text, IT_LANDSCAPE_TERMS) and contains_phrase(text, TRANSFORMATION_TERMS + PROGRAM_VERBS))):
-                  return False, "generic company/careers page without a specific IT role or IT program"
-              return True, "usable source"
-          
-          
-          def is_consumer_noise(item: RawItem) -> Optional[str]:
-              text = lower(item.title + " " + item.snippet)
-              # Do not reject Product Owner by the word product.
-              text_without_product_owner = text.replace("product owner", "productowner")
-              if contains_phrase(text_without_product_owner, CONSUMER_NOISE_PHRASES):
-                  # If the same item has hard IT proof, keep it.
-                  hard = has_word(text, IT_ROLE_TERMS) or (has_word(text, IT_LANDSCAPE_TERMS) and contains_phrase(text, TRANSFORMATION_TERMS + PROGRAM_VERBS))
-                  if not hard:
-                      return "consumer/product/price content, not an IT-landscape signal"
-              return None
-          
-          
-          def is_single_store_franchise_noise(text: str) -> bool:
-              t = lower(text)
-              single_store_patterns = [
-                  r"\bwinkel in [a-zà-ÿ'-]+", r"\bfiliaal in [a-zà-ÿ'-]+", r"ter overname: .* winkel",
-                  r"franchise\+.*winkel", r"winkel te koop", r"franchisenemer gezocht",
-              ]
-              return any(re.search(p, t, re.I) for p in single_store_patterns)
-          
-          
-          def classify_item(item: RawItem, company: Company) -> Decision:
-              text = norm_space(item.title + " " + item.snippet + " " + item.role + " " + item.person)
-              text_l = lower(text)
-              ok, q = source_quality(item)
-              if not ok:
-                  return reject(item, q)
-              noise = is_consumer_noise(item)
-              if noise:
-                  return reject(item, noise)
-          
-              evidence: List[str] = []
-          
-              # 1. IT tender / procurement
-              tender_hits = find_terms(text, TENDER_TERMS)
-              if tender_hits and has_word(text, IT_LANDSCAPE_TERMS + IT_ROLE_TERMS):
-                  evidence = tender_hits + find_terms(text, IT_LANDSCAPE_TERMS + IT_ROLE_TERMS)[:4]
-                  return accept("IT tender / procurement", 98, "Hoog", evidence, q)
-          
-              # 2. Specific IT roles / hiring
-              role_hits = find_terms(text, IT_ROLE_TERMS)
-              job_hits = find_terms(text, JOB_CONTEXT_TERMS)
-              if role_hits and (job_hits or item.source_type.lower().startswith("linkedin") or contains_phrase(item.url, ["/jobs", "vacature", "careers", "werkenbij"])):
-                  # Generic role profile without event is not enough unless it is a watchlist/feed item.
-                  if item.source_type == "LinkedIn publieke index" and contains_phrase(item.url, LINKEDIN_PROFILE_HINTS) and not find_terms(text, LEADERSHIP_EVENT_TERMS + JOB_CONTEXT_TERMS):
-                      return reject(item, "LinkedIn profile discovery only; no concrete job change, post, or hiring signal")
-                  evidence = role_hits[:5] + job_hits[:3]
-                  return accept("IT vacature / capability build-up", 96, "Hoog", evidence, q)
-          
-              # 3. IT/digital leadership change
-              leader_hits = find_terms(text, LEADERSHIP_IT_TERMS)
-              event_hits = find_terms(text, LEADERSHIP_EVENT_TERMS)
-              if leader_hits and event_hits:
-                  evidence = leader_hits[:5] + event_hits[:3]
-                  return accept("IT/Digital leadership change", 94, "Hoog", evidence, q)
-          
-              # General CEO/COO/CFO only with explicit digital transformation context; score lower.
-              gen_leader_hits = find_terms(text, GENERAL_LEADER_TERMS)
-              if gen_leader_hits and event_hits and (has_word(text, IT_LANDSCAPE_TERMS) or contains_phrase(text, ["digital transformation", "digitale transformatie", "data-driven", "omnichannel platform", "technology agenda"])):
-                  evidence = gen_leader_hits[:2] + event_hits[:3] + find_terms(text, IT_LANDSCAPE_TERMS)[:3]
-                  return accept("IT/Digital leadership change", 82, "Middel", evidence, q)
-          
-              # 4. Explicit platform/transformation programme
-              it_hits = find_terms(text, IT_LANDSCAPE_TERMS)
-              trans_hits = find_terms(text, TRANSFORMATION_TERMS + PROGRAM_VERBS)
-              if it_hits and trans_hits:
-                  evidence = it_hits[:6] + trans_hits[:4]
-                  return accept("Expliciete IT-/data-/platformtransformatie", 92, "Hoog", evidence, q)
-          
-              # 5. Vendor/platform choice
-              vendor_hits = find_terms(text, VENDOR_TERMS)
-              if vendor_hits and find_terms(text, PROGRAM_VERBS + ["selectie", "gekozen", "kiest", "partner", "partnership"]):
-                  evidence = vendor_hits[:5] + find_terms(text, PROGRAM_VERBS)[:3]
-                  return accept("Vendor/platform-keuze", 91, "Hoog", evidence, q)
-          
-              # 6. Security event. Must be a real event, not IAM substring.
-              sec_hits = find_terms(text, SECURITY_EVENT_TERMS)
-              if sec_hits:
-                  evidence = sec_hits[:4]
-                  return accept("Security/compliance IT-event", 90, "Hoog", evidence, q)
-          
-              # 7. Qualified M&A / formula integration.
-              mna_hits = find_terms(text, MNA_TERMS)
-              if mna_hits:
-                  # Never accept financial/commodity/single-store M&A as CGI IT-landscape signal.
-                  if contains_phrase(text, MNA_FALSE_POSITIVE_TERMS) or is_single_store_franchise_noise(text):
-                      return reject(item, "M&A-like wording but single-store, financial, commodity or non-operational context")
-                  if company.monitor_mode == "context" and not has_word(text, IT_LANDSCAPE_TERMS):
-                      return reject(item, "M&A at supplier/manufacturer/vendor without explicit IT-landscape evidence")
-                  qualified = contains_phrase(text, MNA_QUALIFIERS) or re.search(r"\bovergenomen door\b|\bneemt .* over\b|\bverkoopt alle vestigingen\b", text_l)
-                  retail_formula_names = contains_phrase(text, ["tuinland", "ranzijn", "roompot", "landal", "xenos", "blokker", "intertoys", "kwantum", "leen bakker", "intratuin", "bruna"])
-                  if qualified or retail_formula_names:
-                      evidence = mna_hits[:4] + find_terms(text, MNA_QUALIFIERS)[:4]
-                      # Qualified M&A is a hypothesis, not proof of IT need. Keep score above 75 but not 95+ unless IT terms also present.
-                      score = 88 if has_word(text, IT_LANDSCAPE_TERMS) else 78
-                      conf = "Middel" if score < 85 else "Hoog"
-                      return accept("Qualified M&A / formule-integratie", score, conf, evidence, q)
-                  return reject(item, "M&A event not qualified as chain/formula/multi-site integration")
-          
-              return reject(item, "no concrete IT role, IT programme, platform/vendor choice, IT leadership change or qualified formula integration")
-          
-          
-          def accept(category: str, score: int, confidence: str, evidence: List[str], source_quality_text: str) -> Decision:
-              meta = CATEGORY_META[category]
-              return Decision(True, category, score, confidence, sorted(set(evidence), key=lambda x: evidence.index(x)), "", meta["cgi"], meta["action"], meta["why"], source_quality_text)
-          
-          
-          def reject(item: RawItem, reason: str) -> Decision:
-              return Decision(False, "Rejected", 0, "Laag", [], reason, "", "", "", reason)
-          
-          # ----------------------------- Search -----------------------------
-          
-          class SearchClient:
-              def __init__(self):
-                  self.brave_key = os.environ.get("BRAVE_SEARCH_API_KEY", "").strip()
-                  self.calls = 0
-                  self.enable_rss = os.environ.get("ENABLE_RSS_FALLBACK", "false").lower() in ("1", "true", "yes", "y")
-                  self.errors: List[str] = []
-          
-              def brave(self, q: str, count: int = 5, freshness_days: int = 30) -> List[Dict[str, Any]]:
-                  if not self.brave_key:
-                      return []
-                  params = {
-                      "q": q,
-                      "count": str(max(1, min(count, 10))),
-                      "search_lang": "nl",
-                      "country": "nl",
-                      "safesearch": "moderate",
-                      "freshness": f"pd{freshness_days}",
-                  }
-                  url = "https://api.search.brave.com/res/v1/web/search?" + urllib.parse.urlencode(params)
-                  req = urllib.request.Request(url, headers={"Accept": "application/json", "X-Subscription-Token": self.brave_key})
-                  try:
-                      with urllib.request.urlopen(req, timeout=20) as r:
-                          data = json.loads(r.read().decode("utf-8"))
-                      self.calls += 1
-                      results = data.get("web", {}).get("results", []) or []
-                      return results
-                  except Exception as e:
-                      self.errors.append(f"Brave error for {q[:80]}: {e}")
-                      return []
-          
-              def google_news_rss(self, q: str, count: int = 5) -> List[Dict[str, Any]]:
-                  # Fallback when no API key exists. News only; no LinkedIn.
-                  url = "https://news.google.com/rss/search?" + urllib.parse.urlencode({"q": q, "hl": "nl", "gl": "NL", "ceid": "NL:nl"})
-                  try:
-                      with urllib.request.urlopen(url, timeout=20) as r:
-                          xml = r.read().decode("utf-8", errors="ignore")
-                      items = re.findall(r"<item>(.*?)</item>", xml, flags=re.S)[:count]
-                      out = []
-                      for it in items:
-                          title = html.unescape(re.search(r"<title>(.*?)</title>", it, flags=re.S).group(1)) if re.search(r"<title>(.*?)</title>", it, flags=re.S) else ""
-                          link = html.unescape(re.search(r"<link>(.*?)</link>", it, flags=re.S).group(1)) if re.search(r"<link>(.*?)</link>", it, flags=re.S) else ""
-                          desc = html.unescape(re.search(r"<description>(.*?)</description>", it, flags=re.S).group(1)) if re.search(r"<description>(.*?)</description>", it, flags=re.S) else ""
-                          pub = html.unescape(re.search(r"<pubDate>(.*?)</pubDate>", it, flags=re.S).group(1)) if re.search(r"<pubDate>(.*?)</pubDate>", it, flags=re.S) else ""
-                          out.append({"title": title, "url": link, "description": re.sub("<.*?>", " ", desc), "published": pub})
-                      return out
-                  except Exception as e:
-                      self.errors.append(f"Google News RSS error for {q[:80]}: {e}")
-                      return []
-          
-          
-          def search_company(company: Company, client: SearchClient, include_linkedin: bool, lookback_days: int) -> List[RawItem]:
-              name = company.name
-              items: List[RawItem] = []
-              # Queries are intentionally narrow. We do not search generic consumer/marketing topics.
-              q_base = f'"{name}"'
-              queries = [
-                  (q_base + ' ("Business Analyst" OR "business analist" OR "data transformation" OR "data transformatie" OR "enterprise architect" OR "solution architect" OR "Product Owner POS" OR "Product Owner data" OR "ERP lead" OR "SAP" OR "data platform")', "Web/vacature met IT-bewijs"),
-                  (q_base + ' (CIO OR CTO OR "Chief Digital Officer" OR "Chief Data Officer" OR "Head of Data" OR "Head of Digital" OR "Head of IT") (benoemd OR aangesteld OR vertrekt OR started OR appointed OR joins)', "Leadership / people"),
-                  (q_base + ' (POS OR kassasysteem OR ERP OR "SAP S/4HANA" OR Salesforce OR Databricks OR Snowflake OR "data platform" OR WMS OR TMS OR IAM OR cybersecurity) (implementatie OR rollout OR migratie OR vervanging OR transformatie OR selects OR kiest)', "IT-platform / transformatie"),
-                  (q_base + ' (overname OR overgenomen OR fusie OR "gaat samen" OR "verkoopt alle vestigingen" OR "nieuwe eigenaar") (vestigingen OR keten OR formule OR hoofdkantoor OR winkels OR restaurants OR parken)', "Qualified M&A candidate"),
-                  (q_base + ' (aanbesteding OR tender OR RFP OR marktconsultatie) (IT OR data OR ERP OR POS OR cloud OR cybersecurity)', "IT tender"),
-              ]
-              if include_linkedin:
-                  queries.extend([
-                      ('site:linkedin.com/jobs ' + q_base + ' ("Business Analyst" OR "business analist" OR "data transformation" OR "Product Owner POS" OR "enterprise architect" OR "ERP" OR "data platform")', "LinkedIn publieke index"),
-                      ('site:linkedin.com/posts ' + q_base + ' ("data transformation" OR "digital transformation" OR "ERP" OR "POS" OR "data platform" OR "Business Analyst" OR "hiring" OR "we are hiring")', "LinkedIn publieke index"),
-                      ('site:linkedin.com/in ' + q_base + ' (CIO OR CTO OR "Head of Data" OR "Head of Digital" OR "Chief Data Officer" OR "IT Director") (started OR appointed OR benoemd OR aangesteld)', "LinkedIn publieke index"),
-                  ])
-              for q, source_type in queries:
-                  results = client.brave(q, count=5, freshness_days=lookback_days)
-                  if not results and source_type != "LinkedIn publieke index" and client.enable_rss:
-                      # Optional narrow RSS fallback only for non-LinkedIn, news-like queries. Disabled by default to avoid noisy/slow runs.
-                      results = client.google_news_rss(q, count=3)
-                  for r in results:
-                      title = norm_space(r.get("title") or r.get("name") or "")
-                      snippet = norm_space(r.get("description") or r.get("snippet") or r.get("extra_snippets", [""])[0] if isinstance(r.get("extra_snippets"), list) and r.get("extra_snippets") else r.get("description") or "")
-                      url = r.get("url") or r.get("link") or ""
-                      age = r.get("age") or r.get("published") or ""
-                      items.append(RawItem(company=name, title=title, snippet=snippet, url=url, source_type=source_type, published=age))
-                  # Be polite and avoid excessive bursts.
-                  if client.brave_key:
-                      time.sleep(0.15)
-              return items
-          
-          # ----------------------------- LinkedIn feed/watchlist -----------------------------
-          
-          def read_csv_file(path: Path) -> List[Dict[str, str]]:
-              if not path.exists():
-                  return []
-              with path.open("r", encoding="utf-8-sig", newline="") as f:
-                  return [dict(row) for row in csv.DictReader(f)]
-          
-          
-          def read_linkedin_feed_url(url: str) -> List[Dict[str, str]]:
-              if not url:
-                  return []
-              try:
-                  with urllib.request.urlopen(url, timeout=20) as r:
-                      body = r.read().decode("utf-8", errors="ignore")
-                  if url.lower().endswith(".csv") or body.lstrip().startswith("date,"):
-                      return [dict(row) for row in csv.DictReader(body.splitlines())]
-                  data = json.loads(body)
-                  if isinstance(data, dict):
-                      return data.get("signals", []) or data.get("items", []) or []
-                  if isinstance(data, list):
-                      return data
-                  return []
-              except Exception:
-                  return []
-          
-          
-          def linkedin_feed_items() -> Tuple[List[RawItem], int, int]:
-              rows = []
-              local = read_csv_file(Path("data/linkedin-signals.csv"))
-              remote = read_linkedin_feed_url(os.environ.get("LINKEDIN_SIGNAL_FEED_URL", ""))
-              rows.extend(local)
-              rows.extend(remote)
-              items: List[RawItem] = []
-              for row in rows:
-                  company = row.get("company") or row.get("bedrijf") or ""
-                  person = row.get("person") or row.get("name") or row.get("persoon") or ""
-                  role = row.get("role") or row.get("functie") or ""
-                  text = row.get("text") or row.get("signal") or row.get("summary") or row.get("snippet") or ""
-                  title = row.get("title") or f"LinkedIn signaal: {person} {role}".strip()
-                  url = row.get("url") or row.get("linkedin_url") or ""
-                  date = row.get("date") or row.get("published") or ""
-                  if company and (text or title):
-                      items.append(RawItem(company=company, title=title, snippet=text, url=url, source_type="LinkedIn goedgekeurde feed", published=date, person=person, role=role))
-              watchlist = read_csv_file(Path("data/people-watchlist.csv"))
-              return items, len(rows), len(watchlist)
-          
-          # ----------------------------- Run -----------------------------
-          
-          def main() -> int:
-              outdir = Path("_site")
-              data_dir = Path("data")
-              outdir.mkdir(parents=True, exist_ok=True)
-              data_dir.mkdir(parents=True, exist_ok=True)
-          
-              max_companies_raw = os.environ.get("MAX_COMPANIES", "ALL").strip()
-              min_score = int(os.environ.get("MIN_SCORE", "78") or "78")
-              lookback_days = int(os.environ.get("LOOKBACK_DAYS", "30") or "30")
-              include_linkedin = os.environ.get("INCLUDE_LINKEDIN_PUBLIC_INDEX", "false").lower() in ("1", "true", "yes", "y")
-          
-              companies = build_companies(COMPANIES_RAW)
-              if max_companies_raw.upper() != "ALL":
-                  try:
-                      companies = companies[:max(1, int(max_companies_raw))]
-                  except Exception:
-                      pass
-          
-              client = SearchClient()
-              signals: List[Dict[str, Any]] = []
-              rejected: List[Dict[str, Any]] = []
-              considered = 0
-              linkedin_public_items = 0
-          
-              # Feed/watchlist first: these are the highest-quality LinkedIn inputs.
-              feed_raw_items, feed_count, watchlist_count = linkedin_feed_items()
-              all_items: List[Tuple[RawItem, Company]] = []
-              company_by_can = {c.canonical: c for c in companies}
-              for item in feed_raw_items:
-                  can = canonicalize_company(item.company)
-                  company = company_by_can.get(can) or Company(item.company, can, "target", "from LinkedIn feed", [])
-                  all_items.append((item, company))
-          
-              # Public search.
-              for company in companies:
-                  raw_items = search_company(company, client, include_linkedin, lookback_days)
-                  for item in raw_items:
-                      if item.source_type == "LinkedIn publieke index":
-                          linkedin_public_items += 1
-                      all_items.append((item, company))
-          
-              seen_signal_keys = set()
-              seen_reject_keys = set()
-              for item, company in all_items:
-                  considered += 1
-                  decision = classify_item(item, company)
-                  rec = {
-                      "id": stable_id(company.canonical, item.title, item.url, decision.category),
-                      "company": company.name,
-                      "company_monitor_mode": company.monitor_mode,
-                      "company_fit_reason": company.fit_reason,
-                      "title": item.title,
-                      "snippet": item.snippet,
-                      "url": item.url,
-                      "domain": url_domain(item.url),
-                      "source_type": item.source_type,
-                      "published": item.published or NOW_UTC.isoformat(),
-                      "person": item.person,
-                      "role": item.role,
-                      "category": decision.category,
-                      "score": decision.score,
-                      "confidence": decision.confidence,
-                      "evidence": decision.evidence,
-                      "why": decision.why,
-                      "cgi_angle": decision.cgi_angle,
-                      "action": decision.action,
-                      "reject_reason": decision.reject_reason,
-                      "source_quality": decision.source_quality,
-                  }
-                  if decision.accepted and decision.score >= min_score:
-                      key = (lower(item.url or item.title), company.canonical, decision.category)
-                      if key not in seen_signal_keys:
-                          seen_signal_keys.add(key)
-                          signals.append(rec)
+
+          SIGNAL_QUERIES = [
+              # Direct IT / buying intent
+              ('IT-vacature', '"Business Analist" "data transformatie" vacature retail'),
+              ('IT-vacature', '"Business Analyst" "data transformation" vacature retailer'),
+              ('IT-vacature', '"Product Owner POS" vacature'),
+              ('IT-vacature', '"Product Owner kassa" vacature'),
+              ('IT-vacature', '"Product Owner checkout" vacature retail'),
+              ('IT-vacature', '"Enterprise Architect" vacature retailer'),
+              ('IT-vacature', '"Solution Architect" vacature retail'),
+              ('IT-vacature', '"ERP Lead" vacature retail'),
+              ('IT-vacature', '"SAP" "S/4HANA" vacature retail'),
+              ('IT-vacature', '"Data Platform" vacature retailer'),
+              ('IT-transformatie', '"POS" rollout retailer Nederland'),
+              ('IT-transformatie', '"kassasysteem" vervangt retail'),
+              ('IT-transformatie', '"ERP-transformatie" retail'),
+              ('IT-transformatie', '"SAP S/4HANA" retailer Nederland'),
+              ('IT-transformatie', '"data platform" retailer transformatie'),
+              ('IT-transformatie', '"omnichannel platform" retailer'),
+              ('IT-transformatie', '"WMS" retail transformatie'),
+              ('IT-transformatie', '"CRM" "retail" "transformatie"'),
+              ('IT-leadership', '"Chief Digital Officer" retailer benoemd'),
+              ('IT-leadership', '"Chief Data Officer" retailer benoemd'),
+              ('IT-leadership', '"Head of Data" retailer benoemd'),
+              ('IT-leadership', '"CIO" retailer benoemd'),
+              ('IT-tender', 'aanbesteding ERP POS data cloud retail'),
+              ('IT-tender', 'RFP ERP POS data platform retail'),
+              # Indirect but valid integration triggers
+              ('M&A-formule-integratie', 'overname retailketen vestigingen'),
+              ('M&A-formule-integratie', 'overgenomen winkels formule retail'),
+              ('M&A-formule-integratie', 'neemt over alle vestigingen retail'),
+              ('M&A-formule-integratie', 'fusie retailketen hoofdkantoor'),
+              ('M&A-formule-integratie', 'formuletransplantatie overname winkels'),
+              ('M&A-formule-integratie', 'overname tuincentrum vestigingen'),
+              ('M&A-formule-integratie', 'overname restaurantketen vestigingen'),
+          ]
+
+          LINKEDIN_QUERIES = [
+              ('LinkedIn posts', 'site:linkedin.com/posts "Business Analist" "data transformatie" retail'),
+              ('LinkedIn posts', 'site:linkedin.com/posts "Product Owner POS" retail'),
+              ('LinkedIn posts', 'site:linkedin.com/posts "data platform" "we are hiring" retail'),
+              ('LinkedIn posts', 'site:linkedin.com/posts "Head of Data" "started" retailer'),
+          ]
+
+          TERM_CACHE = {}
+          def strip_accents(s: str) -> str:
+              return ''.join(c for c in unicodedata.normalize('NFKD', s) if not unicodedata.combining(c))
+
+          def low(s: str) -> str:
+              return strip_accents(str(s or '')).lower()
+
+          def compact_spaces(s: str) -> str:
+              return re.sub(r'\s+', ' ', str(s or '').strip())
+
+          def canonical_company_key(name: str) -> str:
+              n = low(name)
+              n = re.sub(r'\([^)]*\)', ' ', n)
+              n = re.sub(r'\b(b\.?v\.?|n\.?v\.?|u\.?a\.?|se|ltd|limited|holding|holdings|group|groep|the netherlands|netherlands|nederland|retail|international|europe|benelux|services|service|management|operations|bv|nv|cooperatie|cooperatief|stichting)\b', ' ', n)
+              n = re.sub(r'[^a-z0-9&+]+', ' ', n)
+              return compact_spaces(n)
+
+          def has_term(text: str, term: str) -> bool:
+              key = term
+              if key not in TERM_CACHE:
+                  # If term is short/acronym, require word-ish boundaries to avoid "ai" inside "retail".
+                  t = re.escape(low(term)).replace('\\ ', r'\s+')
+                  TERM_CACHE[key] = re.compile(r'(?<![a-z0-9])' + t + r'(?![a-z0-9])', re.I)
+              return bool(TERM_CACHE[key].search(low(text)))
+
+          def has_any(text: str, terms: list[str]) -> bool:
+              return any(has_term(text, t) for t in terms)
+
+          def matched_terms(text: str, terms: list[str]) -> list[str]:
+              return [t for t in terms if has_term(text, t)]
+
+          def domain_of(url: str) -> str:
+              try: return urllib.parse.urlparse(url).netloc.lower().replace('www.', '')
+              except Exception: return ''
+
+          def path_of(url: str) -> str:
+              try: return urllib.parse.urlparse(url).path.lower()
+              except Exception: return ''
+
+          def make_aliases(raw: str) -> list[str]:
+              aliases = []
+              clean = re.sub(r'\([^)]*\)', ' ', raw).strip()
+              variants = [raw, clean]
+              # Strip common legal/company words for a brand alias.
+              base = canonical_company_key(raw)
+              if base:
+                  variants.append(base)
+              # Keep pre-slash alternatives.
+              for sep in ['/', '|', ' - ']:
+                  if sep in raw:
+                      variants.extend([x.strip() for x in raw.split(sep) if x.strip()])
+              key = canonical_company_key(raw)
+              for k, vals in MANUAL_ALIASES.items():
+                  if k in key or key in k:
+                      variants.extend(vals)
+              for v in variants:
+                  v = compact_spaces(v)
+                  if not v: continue
+                  # Remove legal suffixes from display aliases.
+                  v2 = re.sub(r'\b(B\.?V\.?|N\.?V\.?|U\.?A\.?|Holding|Holdings|Group|Groep|Nederland|Netherlands|Retail|International|Europe|Benelux)\b', ' ', v, flags=re.I)
+                  v2 = compact_spaces(v2)
+                  for x in [v, v2]:
+                      if len(x) >= 3 and low(x) not in {'bv','nv','group','holding','retail'}:
+                          aliases.append(x)
+              # Deduplicate; prefer longer aliases first to avoid "AH" matching too often.
+              seen, out = set(), []
+              for a in sorted(aliases, key=lambda z: (-len(z), low(z))):
+                  k = low(a)
+                  if k not in seen:
+                      seen.add(k); out.append(a)
+              return out[:10]
+
+          def build_accounts() -> list[dict]:
+              rows = [r.strip() for r in COMPANIES_RAW.splitlines() if r.strip()]
+              if rows and low(rows[0]) == 'organisatie': rows = rows[1:]
+              seen = {}
+              for raw in rows:
+                  key = canonical_company_key(raw)
+                  if not key: continue
+                  source_only = any(s in key for s in SOURCE_ONLY_NAMES)
+                  aliases = make_aliases(raw)
+                  if key in seen:
+                      seen[key]['raw_count'] += 1
+                      for a in aliases:
+                          if low(a) not in [low(x) for x in seen[key]['aliases']]:
+                              seen[key]['aliases'].append(a)
+                      seen[key]['source_only'] = seen[key]['source_only'] and source_only
                   else:
-                      key = (lower(item.url or item.title), company.canonical, rec.get("reject_reason", ""))
-                      if key not in seen_reject_keys and len(rejected) < 400:
-                          seen_reject_keys.add(key)
-                          rejected.append(rec)
-          
-              signals.sort(key=lambda r: (r["score"], r["published"]), reverse=True)
-          
-              meta = {
-                  "version": VERSION,
-                  "generated_utc": NOW_UTC.isoformat(),
-                  "accounts_scanned": len(companies),
-                  "target_accounts": sum(1 for c in companies if c.monitor_mode == "target"),
-                  "context_accounts": sum(1 for c in companies if c.monitor_mode == "context"),
-                  "items_considered": considered,
-                  "signals_published": len(signals),
-                  "rejected_logged": len(rejected),
-                  "min_score": min_score,
-                  "lookback_days": lookback_days,
-                  "include_linkedin_public_index": include_linkedin,
-                  "linkedin_public_items_considered": linkedin_public_items,
-                  "linkedin_feed_items": feed_count,
-                  "people_watchlist_count": watchlist_count,
-                  "brave_search_enabled": bool(client.brave_key),
-                  "rss_fallback_enabled": bool(client.enable_rss),
-                  "brave_calls": client.calls,
-                  "search_errors": client.errors[:10],
-                  "rule_summary": [
-                      "Geen Wikipedia, Facebook, Instagram, TikTok, YouTube of product-/folderpagina's als signaal.",
-                      "Geen consumenten-, prijs-, folder-, product- of commoditynieuws.",
-                      "CEO/COO/CFO-change is geen signaal zonder expliciete IT/digital-context.",
-                      "M&A is alleen signaal als het een keten/formule/multi-site integratie betreft of expliciete IT-landschaptermen bevat.",
-                      "LinkedIn publieke index is discovery, geen volledige scan. Beste LinkedIn-bron is people-watchlist + goedgekeurde signal-feed.",
-                  ],
+                      seen[key] = {'name': raw, 'key': key, 'aliases': aliases, 'source_only': source_only, 'raw_count': 1}
+              return list(seen.values())
+
+          def is_blocked_source(item: dict) -> tuple[bool, str]:
+              url = item.get('url',''); title = item.get('title','')
+              d = domain_of(url); t = low(title)
+              if any(b in d for b in BLOCKED_DOMAINS) or 'wikipedia' in t:
+                  return True, 'blocked source: Wikipedia/social/non-evidence domain'
+              return False, ''
+
+          def source_confidence(url: str, source: str) -> str:
+              d = domain_of(url)
+              if source.lower().startswith('manual') or 'linkedin feed' in source.lower(): return 'Hoog'
+              if any(x in d for x in STRONG_NEWS_DOMAINS): return 'Hoog'
+              if any(x in url.lower() for x in JOB_DOMAINS): return 'Hoog'
+              if 'linkedin.com' in d: return 'Middel'
+              return 'Middel'
+
+          def source_type(url: str, source: str) -> str:
+              d = domain_of(url)
+              if 'linkedin.com' in d: return 'LinkedIn feed / publieke index'
+              if any(x in url.lower() for x in JOB_DOMAINS): return 'IT-vacaturebron'
+              if source.lower().startswith('manual'): return 'Handmatig signaal'
+              return 'Nieuws / publieke bron'
+
+          def match_accounts(text: str, accounts: list[dict]) -> list[dict]:
+              ltext = low(text)
+              found = []
+              for a in accounts:
+                  if a.get('source_only'): continue
+                  for alias in a['aliases']:
+                      al = low(alias)
+                      if len(al) < 4 and al not in {'ah'}:
+                          continue
+                      # For one-word aliases, require exact boundary.
+                      if has_term(ltext, al):
+                          found.append({**a, 'matched_alias': alias})
+                          break
+              # Prefer longest matched alias and dedupe by account key.
+              dedup = {}
+              for a in sorted(found, key=lambda x: -len(x.get('matched_alias',''))):
+                  dedup.setdefault(a['key'], a)
+              return list(dedup.values())
+
+          def product_or_generic_reject(title: str, snippet: str, url: str) -> tuple[bool, str]:
+              text = f'{title} {snippet}'
+              p = path_of(url)
+              # Reject product/consumer unless it explicitly contains IT vacancy or IT change.
+              explicit_it = has_any(text, IT_ROLES) or (has_any(text, IT_LANDSCAPE_TERMS) and has_any(text, CHANGE_TERMS))
+              if has_any(text, NOISE_TERMS) and not explicit_it:
+                  return True, 'consumer/product/price/marketing content, not IT landscape signal'
+              if any(x in p for x in ['/product', '/producten', '/category', '/categorie', '/assortiment', '/folder', '/aanbied', '/shop/']) and not explicit_it:
+                  return True, 'product/category/folder URL path'
+              if has_any(title, GENERIC_PAGE_TERMS) and not explicit_it and not (has_any(text, MA_TERMS) and has_any(text, SCALE_TERMS)):
+                  return True, 'generic homepage/careers page without specific IT role or event'
+              return False, ''
+
+          def is_single_store(text: str) -> bool:
+              if has_any(text, SINGLE_LOCATION_TERMS) and not has_any(text, ['alle vestigingen','meerdere vestigingen','keten','formule','hoofdkantoor']):
+                  return True
+              return False
+
+          def classify_item(company: dict, item: dict) -> tuple[dict|None, str]:
+              title = compact_spaces(item.get('title',''))
+              snippet = compact_spaces(item.get('snippet',''))
+              url = item.get('url','')
+              source = item.get('source','')
+              text = f'{title} {snippet}'
+              if not title and not snippet: return None, 'empty item'
+              blocked, reason = is_blocked_source(item)
+              if blocked: return None, reason
+              bad, reason = product_or_generic_reject(title, snippet, url)
+              if bad: return None, reason
+              if company.get('source_only'): return None, 'source-only vendor/supplier, not retail target'
+
+              evidence = []
+              category = ''
+              strength = 'Direct'
+              score = 0
+              reason_short = ''
+
+              it_role_hits = matched_terms(text, IT_ROLES)
+              job_hits = matched_terms(text, JOB_TERMS)
+              landscape_hits = matched_terms(text, IT_LANDSCAPE_TERMS)
+              change_hits = matched_terms(text, CHANGE_TERMS)
+              leadership_role_hits = matched_terms(text, LEADERSHIP_ROLES)
+              leadership_event_hits = matched_terms(text, LEADERSHIP_EVENTS)
+              ma_hits = matched_terms(text, MA_TERMS)
+              tender_hits = matched_terms(text, TENDER_TERMS)
+              security_hits = matched_terms(text, SECURITY_TERMS)
+
+              # 1. Direct IT hiring/capability demand.
+              if it_role_hits and (job_hits or any(x in low(url) for x in JOB_DOMAINS) or 'linkedin feed' in low(source)):
+                  category = 'IT-vacature / capability demand'
+                  evidence = it_role_hits[:5] + job_hits[:3]
+                  score = 90
+                  reason_short = 'specific IT/transformation role'
+              # 2. Tender/RFP.
+              elif tender_hits and (landscape_hits or it_role_hits):
+                  category = 'IT-tender / RFP'
+                  evidence = tender_hits + landscape_hits[:5]
+                  score = 91
+                  reason_short = 'tender/RFP with IT scope'
+              # 3. Explicit landscape change.
+              elif landscape_hits and change_hits:
+                  category = 'Expliciete IT-landschap verandering'
+                  evidence = landscape_hits[:6] + change_hits[:4]
+                  score = 87
+                  reason_short = 'IT platform/landscape change event'
+              # 4. Vendor/platform choice. (Subset of landscape, but explicit vendor + change should be highlighted.)
+              elif landscape_hits and has_any(text, ['kiest','selecteert','gekozen','partners with','samenwerking met']):
+                  category = 'Vendor/platform keuze'
+                  evidence = landscape_hits[:6]
+                  score = 86
+                  reason_short = 'vendor/platform choice'
+              # 5. IT/digital leadership. CEO alone does not count.
+              elif leadership_role_hits and leadership_event_hits:
+                  category = 'IT/Digital leadership change'
+                  evidence = leadership_role_hits[:4] + leadership_event_hits[:4]
+                  score = 85
+                  reason_short = 'IT/data/digital leadership event'
+              # 6. Security/compliance event.
+              elif security_hits and (change_hits or has_any(text, ['incident','aanval','datalek','ransomware','maturity','programma','audit'])):
+                  category = 'Security/compliance IT-event'
+                  evidence = security_hits + change_hits[:4]
+                  score = 84
+                  reason_short = 'security/compliance event'
+              # 7. Qualified M&A / integration. Indirect, must be real retail/formula/chain change, not financial/consumer/single-store.
+              elif ma_hits:
+                  if has_any(text, FINANCIAL_ONLY_TERMS):
+                      return None, 'financial-only M&A article, no IT-landscape trigger'
+                  if is_single_store(text):
+                      return None, 'single-store/franchise transaction, too small for CGI IT-landscape signal'
+                  # Accept if scaled language exists, or if the title is an acquisition of a named formula/chain and not single-location.
+                  scaled = has_any(text, SCALE_TERMS)
+                  formula_like = bool(re.search(r'\b(overgenomen door|neemt over|acquired by|verkoopt alle vestigingen aan)\b', low(text)))
+                  if not scaled and not formula_like:
+                      return None, 'M&A term without scale/formula/integration evidence'
+                  category = 'Gekwalificeerde M&A / formule-integratie'
+                  strength = 'Indirect'
+                  evidence = ma_hits + matched_terms(text, SCALE_TERMS)[:5]
+                  score = 78 if scaled else 76
+                  reason_short = 'qualified retail/formula integration event'
+              else:
+                  return None, 'no concrete IT-landscape, IT-role, IT-leadership, tender, security or qualified integration trigger'
+
+              confidence = source_confidence(url, source)
+              if confidence == 'Hoog': score += 4
+              if source.lower().startswith('manual') or 'linkedin feed' in source.lower(): score += 5
+              if strength == 'Indirect': score = min(score, 82)
+              priority = 'Valideren deze week' if strength == 'Indirect' else ('Actie binnen 48 uur' if score >= 86 else 'Review deze week')
+              why_map = {
+                  'IT-vacature / capability demand': 'Een specifieke IT/transformatie-vacature is een sterk signaal dat er capaciteit of expertise nodig is.',
+                  'IT-tender / RFP': 'Een tender/RFP met IT-scope is directe buying intent.',
+                  'Expliciete IT-landschap verandering': 'Een benoemd platform-, data-, ERP-, POS-, cloud- of integratieprogramma wijst direct op IT-veranderwerk.',
+                  'Vendor/platform keuze': 'Vendor- of platformkeuze leidt vaak tot integratie, migratie, testing, change en managed services.',
+                  'IT/Digital leadership change': 'Nieuwe IT-, data- of digital-leiders bepalen vaak snel roadmap, prioriteiten en partnerbehoefte.',
+                  'Security/compliance IT-event': 'Security- of compliance-events creëren urgentie rond remediation, IAM, governance en monitoring.',
+                  'Gekwalificeerde M&A / formule-integratie': 'Retail/formule-integratie creëert vaak meerdere POS-, ERP-, CRM-, finance-, data- en integratielandschappen. Dit is een hypothese die eerst gevalideerd moet worden.'
               }
-              payload = {"meta": meta, "signals": signals, "rejected": rejected, "companies": [asdict(c) for c in companies]}
-              Path("data/signals-v5.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-              (outdir / "signals-v5.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-              write_dashboard(outdir, payload)
-              print(json.dumps(meta, indent=2, ensure_ascii=False))
-              return 0
-          
-          # ----------------------------- Dashboard -----------------------------
-          
-          def js_escape_json(obj: Any) -> str:
-              # Avoid GitHub Actions expression collision; no expression tokens are created.
-              return json.dumps(obj, ensure_ascii=False).replace("</", "<\\/")
-          
-          
-          def write_dashboard(outdir: Path, payload: Dict[str, Any]) -> None:
-              data_js = js_escape_json(payload)
-              html_doc = f"""<!doctype html>
-          <html lang="nl">
-          <head>
-            <meta charset="utf-8" />
-            <meta name="viewport" content="width=device-width, initial-scale=1" />
-            <title>CGI IT Landscape Signal Radar</title>
-            <style>
-              :root {{ --cgi-red:#e31937; --cgi-purple:#5236ab; --black:#000; --white:#fff; --soft:#f6f4f7; --line:#e8e3ea; --muted:#675f6b; --ok:#0f6b3d; --warn:#9a5b00; }}
-              * {{ box-sizing:border-box; }}
-              body {{ margin:0; font-family: Arial, Helvetica, sans-serif; background:var(--soft); color:var(--black); }}
-              .login {{ min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; background:linear-gradient(135deg,#e31937,#a82465,#5236ab); }}
-              .login-card {{ width:min(520px,100%); background:#fff; border-radius:24px; padding:32px; box-shadow:0 25px 80px rgba(0,0,0,.24); }}
-              .brand {{ display:flex; align-items:center; gap:12px; margin-bottom:18px; }}
-              .logo {{ width:42px; height:42px; background:#e31937; color:#fff; display:grid; place-items:center; font-weight:800; border-radius:10px; }}
-              h1 {{ font-size:28px; margin:0 0 8px; }}
-              h2 {{ font-size:20px; margin:0 0 12px; }}
-              p {{ line-height:1.45; }}
-              input, select, textarea {{ width:100%; padding:12px 14px; border:1px solid var(--line); border-radius:12px; font-size:14px; background:#fff; }}
-              button {{ border:0; background:var(--cgi-red); color:white; padding:12px 16px; border-radius:12px; font-weight:700; cursor:pointer; }}
-              button.secondary {{ background:var(--cgi-purple); }}
-              .error {{ color:#e31937; min-height:20px; font-weight:700; }}
-              .app {{ display:none; }}
-              header {{ background:#000; color:#fff; padding:22px 28px; }}
-              header .top {{ display:flex; justify-content:space-between; align-items:center; gap:18px; flex-wrap:wrap; }}
-              header .title {{ display:flex; align-items:center; gap:14px; }}
-              header h1 {{ color:#fff; }}
-              header .subtitle {{ color:#e8e3ea; margin:4px 0 0; }}
-              .pill {{ display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:700; background:#fff; color:#000; }}
-              .pill.red {{ background:#e31937; color:#fff; }} .pill.purple {{ background:#5236ab; color:#fff; }} .pill.soft {{ background:#f1eef5; color:#000; }}
-              main {{ padding:24px 28px 48px; max-width:1400px; margin:0 auto; }}
-              .stats {{ display:grid; grid-template-columns:repeat(5,minmax(150px,1fr)); gap:14px; margin:-34px 0 22px; }}
-              .stat {{ background:#fff; border:1px solid var(--line); border-radius:18px; padding:18px; box-shadow:0 8px 22px rgba(0,0,0,.06); }}
-              .stat b {{ font-size:28px; display:block; }} .stat span {{ color:var(--muted); font-size:13px; }}
-              .tabs {{ display:flex; gap:8px; flex-wrap:wrap; margin:18px 0; }}
-              .tab {{ background:#fff; border:1px solid var(--line); color:#000; padding:10px 14px; border-radius:999px; cursor:pointer; font-weight:700; }}
-              .tab.active {{ background:#5236ab; color:#fff; }}
-              .toolbar {{ display:grid; grid-template-columns:2fr 1fr 1fr 1fr; gap:10px; margin-bottom:16px; }}
-              .grid {{ display:grid; gap:14px; }}
-              .card {{ background:#fff; border:1px solid var(--line); border-radius:18px; padding:18px; box-shadow:0 8px 22px rgba(0,0,0,.04); }}
-              .card-head {{ display:flex; justify-content:space-between; gap:12px; align-items:flex-start; flex-wrap:wrap; }}
-              .company {{ font-size:18px; font-weight:800; }}
-              .title-line {{ font-size:16px; font-weight:700; margin-top:4px; }}
-              .meta {{ color:var(--muted); font-size:13px; margin-top:6px; }}
-              .score {{ width:58px; height:58px; border-radius:18px; display:grid; place-items:center; color:#fff; font-weight:900; background:linear-gradient(135deg,#e31937,#5236ab); font-size:20px; }}
-              .cols {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; margin-top:14px; }}
-              .box {{ border-left:4px solid #e31937; background:#faf9fb; padding:12px; border-radius:12px; }}
-              .box h3 {{ margin:0 0 6px; font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:#5236ab; }}
-              .box p {{ margin:0; font-size:14px; }}
-              .evidence {{ display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }}
-              a {{ color:#5236ab; font-weight:700; text-decoration:none; }}
-              .empty {{ background:#fff; border:1px dashed #c8bdcc; border-radius:18px; padding:26px; text-align:center; }}
-              .section {{ display:none; }} .section.active {{ display:block; }}
-              table {{ width:100%; border-collapse:collapse; background:#fff; border-radius:18px; overflow:hidden; }}
-              th, td {{ padding:12px; border-bottom:1px solid var(--line); text-align:left; font-size:14px; }}
-              th {{ background:#000; color:#fff; }}
-              code {{ background:#f1eef5; padding:2px 6px; border-radius:6px; }}
-              .note {{ border-left:5px solid #5236ab; background:#fff; padding:16px; border-radius:16px; margin:12px 0; }}
-              @media (max-width:900px) {{ .stats {{ grid-template-columns:1fr 1fr; margin-top:0; }} .toolbar,.cols {{ grid-template-columns:1fr; }} main {{ padding:16px; }} }}
-            </style>
-          </head>
-          <body>
-            <div class="login" id="login">
-              <div class="login-card">
-                <div class="brand"><div class="logo">CGI</div><div><b>IT Landscape Signal Radar</b><br><span style="color:#675f6b">Retail & Consumer Services</span></div></div>
-                <h1>Login</h1>
-                <p>Deze radar toont alleen signalen met concrete IT-landschap-relevantie. Bij twijfel: geen signaal.</p>
-                <input id="code" type="password" placeholder="Login code" autocomplete="current-password" />
-                <div style="height:12px"></div>
-                <button onclick="login()">Open dashboard</button>
-                <p class="error" id="loginError"></p>
-              </div>
-            </div>
-          
-            <div class="app" id="app">
-              <header>
-                <div class="top">
-                  <div class="title"><div class="logo">CGI</div><div><h1>IT Landscape Signal Radar</h1><p class="subtitle">Geen algemene nieuwsrader. Alleen IT-vacatures, IT-leadership, platform/transformatie, IT-tenders en gekwalificeerde formule-integraties.</p></div></div>
-                  <div><span class="pill red">BD_Signal_26</span> <span class="pill">{VERSION}</span></div>
-                </div>
-              </header>
-              <main>
-                <div class="stats" id="stats"></div>
-                <div class="tabs">
-                  <button class="tab active" data-tab="signals">Signalen</button>
-                  <button class="tab" data-tab="rejected">Afgewezen</button>
-                  <button class="tab" data-tab="linkedin">LinkedIn</button>
-                  <button class="tab" data-tab="coverage">Coverage</button>
-                  <button class="tab" data-tab="rules">Regels</button>
-                </div>
-                <section id="signals" class="section active">
-                  <div class="toolbar"><input id="q" placeholder="Zoek bedrijf, titel, bewijs..."><select id="cat"><option value="">Alle categorieën</option></select><select id="conf"><option value="">Alle confidence</option></select><select id="mode"><option value="">Alle accounttypes</option></select></div>
-                  <div id="signalGrid" class="grid"></div>
-                </section>
-                <section id="rejected" class="section"><div class="note"><b>Waarom deze tab bestaat:</b> de kwaliteit van deze radar zit vooral in wat hij weggooit. Wikipedia, productpagina's, consumentenprijzen, generieke vacaturepagina's en CEO-nieuws zonder IT-context horen hier.</div><div id="rejectedGrid" class="grid"></div></section>
-                <section id="linkedin" class="section"><div id="linkedinPanel"></div></section>
-                <section id="coverage" class="section"><div id="coveragePanel"></div></section>
-                <section id="rules" class="section"><div id="rulesPanel"></div></section>
-              </main>
-            </div>
-          <script>
-          const DATA = {data_js};
-          function login() {{
-            const val = document.getElementById('code').value;
-            if (val === '{LOGIN_CODE}') {{ sessionStorage.setItem('bd_signal_login','ok'); showApp(); }}
-            else document.getElementById('loginError').textContent = 'Onjuiste login-code';
-          }}
-          function showApp() {{ document.getElementById('login').style.display='none'; document.getElementById('app').style.display='block'; renderAll(); }}
-          if (sessionStorage.getItem('bd_signal_login') === 'ok') showApp();
-          function esc(s) {{ return String(s ?? '').replace(/[&<>\"']/g, m => ({{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}}[m])); }}
-          function dateFmt(s) {{ try {{ return new Date(s).toLocaleString('nl-NL'); }} catch(e) {{ return esc(s); }} }}
-          function renderAll() {{ renderStats(); initFilters(); renderSignals(); renderRejected(); renderLinkedIn(); renderCoverage(); renderRules(); }}
-          document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => {{ document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); document.querySelectorAll('.section').forEach(x=>x.classList.remove('active')); b.classList.add('active'); document.getElementById(b.dataset.tab).classList.add('active'); }}));
-          function renderStats() {{ const m=DATA.meta; const rows=[['Signalen',m.signals_published],['Afgewezen',m.rejected_logged],['Accounts',m.accounts_scanned],['LinkedIn items',m.linkedin_public_items_considered + m.linkedin_feed_items],['Drempel',m.min_score]]; document.getElementById('stats').innerHTML = rows.map(r => '<div class="stat"><b>'+esc(r[1])+'</b><span>'+esc(r[0])+'</span></div>').join(''); }}
-          function initFilters() {{ const cats=[...new Set(DATA.signals.map(x=>x.category))].sort(); document.getElementById('cat').innerHTML='<option value="">Alle categorieën</option>'+cats.map(c=>'<option>'+esc(c)+'</option>').join(''); document.getElementById('conf').innerHTML='<option value="">Alle confidence</option><option>Hoog</option><option>Middel</option><option>Laag</option>'; document.getElementById('mode').innerHTML='<option value="">Alle accounttypes</option><option>target</option><option>context</option>'; ['q','cat','conf','mode'].forEach(id=>document.getElementById(id).addEventListener('input',renderSignals)); }}
-          function signalCard(x) {{ return '<div class="card"><div class="card-head"><div><div class="company">'+esc(x.company)+'</div><div class="title-line">'+esc(x.title)+'</div><div class="meta">'+esc(x.source_type)+' · '+esc(x.domain)+' · '+dateFmt(x.published)+' · Confidence: '+esc(x.confidence)+'</div><div class="evidence">'+(x.evidence||[]).map(e=>'<span class="pill soft">'+esc(e)+'</span>').join('')+'</div></div><div class="score">'+esc(x.score)+'</div></div><div class="cols"><div class="box"><h3>Waarom</h3><p>'+esc(x.why)+'</p></div><div class="box"><h3>CGI-angle</h3><p>'+esc(x.cgi_angle)+'</p></div><div class="box"><h3>Actie</h3><p>'+esc(x.action)+'</p></div></div><p class="meta" style="margin-top:12px">Accounttype: '+esc(x.company_monitor_mode)+' — '+esc(x.company_fit_reason)+'</p>'+(x.url?'<p><a href="'+esc(x.url)+'" target="_blank" rel="noopener">Open bron</a></p>':'')+'</div>'; }}
-          function renderSignals() {{ const q=document.getElementById('q').value.toLowerCase(), cat=document.getElementById('cat').value, conf=document.getElementById('conf').value, mode=document.getElementById('mode').value; const rows=DATA.signals.filter(x=>(!q || JSON.stringify(x).toLowerCase().includes(q)) && (!cat || x.category===cat) && (!conf || x.confidence===conf) && (!mode || x.company_monitor_mode===mode)); document.getElementById('signalGrid').innerHTML = rows.length ? rows.map(signalCard).join('') : '<div class="empty"><h2>Geen concrete IT-landschap-signalen boven de drempel</h2><p>Dat is bewust beter dan bullshit-signalen.</p></div>'; }}
-          function renderRejected() {{ document.getElementById('rejectedGrid').innerHTML = DATA.rejected.slice(0,100).map(x=>'<div class="card"><b>'+esc(x.company)+'</b><div class="title-line">'+esc(x.title)+'</div><div class="meta">'+esc(x.source_type)+' · '+esc(x.domain)+'</div><p><b>Afgewezen:</b> '+esc(x.reject_reason)+'</p>'+(x.url?'<a href="'+esc(x.url)+'" target="_blank">Open bron</a>':'')+'</div>').join('') || '<div class="empty">Geen afgewezen items gelogd.</div>'; }}
-          function renderLinkedIn() {{ const m=DATA.meta; document.getElementById('linkedinPanel').innerHTML = '<div class="card"><h2>LinkedIn-status</h2><p>LinkedIn wordt niet gescraped. De publieke index is alleen discovery. Echte kwaliteit komt uit <code>data/people-watchlist.csv</code> en <code>data/linkedin-signals.csv</code>.</p><table><tr><th>Onderdeel</th><th>Aantal</th></tr><tr><td>Publieke LinkedIn-indexitems overwogen</td><td>'+esc(m.linkedin_public_items_considered)+'</td></tr><tr><td>Goedgekeurde LinkedIn-feeditems</td><td>'+esc(m.linkedin_feed_items)+'</td></tr><tr><td>People watchlist entries</td><td>'+esc(m.people_watchlist_count)+'</td></tr></table><div class="note"><b>Praktisch advies:</b> zet CIO/CTO/CDO/Head of Data/Head of Digital/Product Owner POS/ERP leads uit Sales Navigator handmatig in de watchlist. Laat de agent daarna alleen hun concrete posts, role changes en hiring-signalen scoren.</div></div>'; }}
-          function renderCoverage() {{ const m=DATA.meta; document.getElementById('coveragePanel').innerHTML='<div class="card"><h2>Coverage</h2><table><tr><th>Metric</th><th>Waarde</th></tr>'+Object.entries(m).filter(([k,v])=>!Array.isArray(v) && typeof v !== 'object').map(([k,v])=>'<tr><td>'+esc(k)+'</td><td>'+esc(v)+'</td></tr>').join('')+'</table></div>'; }}
-          function renderRules() {{ document.getElementById('rulesPanel').innerHTML='<div class="card"><h2>Kwaliteitsregels</h2>'+DATA.meta.rule_summary.map(r=>'<p>✓ '+esc(r)+'</p>').join('')+'<div class="note"><b>Ranzijn/Tuinland-regel:</b> keten/formule/multi-site overname mag als hypothese-signaal door. Melkprijs, Wikipedia, productpagina’s, losse consumentenartikelen en single-store franchiseverkoop niet.</div></div>'; }}
-          </script>
-          </body>
-          </html>"""
-              (outdir / "index.html").write_text(html_doc, encoding="utf-8")
-          
-          
-          def self_test() -> int:
-              companies = build_companies(COMPANIES_RAW)
-              by = {canonicalize_company(c.name): c for c in companies}
-              def comp(name: str) -> Company:
-                  can = canonicalize_company(name)
-                  if can in by:
-                      return by[can]
-                  mode, reason = infer_monitor_mode(name)
-                  return Company(name, can, mode, reason, [])
+              cgi_map = {
+                  'IT-vacature / capability demand': 'Business analysis, product ownership, architecture, data engineering, integration, testing, cloud/ERP/POS delivery squads en managed services.',
+                  'IT-tender / RFP': 'Bid/no-bid review, solutioning, delivery model, pricing, partnerstrategie en proposal support.',
+                  'Expliciete IT-landschap verandering': 'Roadmap, architecture, implementation, integration/API, data migration, testing, change, cloud en managed services.',
+                  'Vendor/platform keuze': 'Implementation support, integration architecture, data migration, testing, change adoption, programme assurance en run/managed services.',
+                  'IT/Digital leadership change': 'Executive briefing, 100-dagen IT roadmap, enterprise architecture, data/AI-strategie, programme assurance en delivery-capaciteit.',
+                  'Security/compliance IT-event': 'Cyber assessment, IAM, SOC/MDR, cloud security, remediation, governance en compliance-programma\'s.',
+                  'Gekwalificeerde M&A / formule-integratie': 'Post-merger IT integration, application rationalization, data migration, ERP/POS/CRM-harmonisatie, integratie-architectuur en change.'
+              }
+              action = 'Niet koud verkopen. Maak eerst een integratiehypothese en valideer welk POS/ERP/CRM/data-landschap geraakt wordt.' if strength == 'Indirect' else 'Maak een korte accountbrief met bewijs, hypothese, betrokken IT-landschap en één concrete CGI-haak.'
+              if category == 'IT-vacature / capability demand':
+                  action = 'Bekijk de vacaturedetails en koppel de rol aan een mogelijk programma. Zoek de hiring manager of IT-stakeholder.'
+              signal = {
+                  'id': hashlib.sha1(f"{company['key']}|{title}|{url}".encode()).hexdigest()[:12],
+                  'company': company['name'], 'matched_alias': company.get('matched_alias',''), 'title': title, 'snippet': snippet, 'url': url,
+                  'source': source, 'source_type': source_type(url, source), 'published': item.get('published',''), 'category': category,
+                  'reason_short': reason_short, 'evidence_hits': sorted(set([e for e in evidence if e]))[:10],
+                  'score': max(0, min(100, score)), 'priority': priority, 'confidence': confidence, 'strength': strength,
+                  'why': why_map[category], 'cgi_angle': cgi_map[category], 'action': action,
+                  'outreach': make_outreach(company['name'], title, category, strength)
+              }
+              return signal, 'accepted'
+
+          def make_outreach(company: str, title: str, category: str, strength: str) -> str:
+              if strength == 'Indirect':
+                  return f"Ik zag een mogelijk integratiesignaal rond {company}: '{title}'. Ik zou dit niet direct als koopintentie behandelen, maar eerst valideren of POS, ERP, CRM, data, finance of integraties geraakt worden. Als dat zo is, kan CGI helpen met een compacte integratie-roadmap en delivery-aanpak."
+              return f"Ik zag een concreet IT-landschap-signaal rond {company}: '{title}'. Dit valt onder {category}. CGI kan helpen met analyse, architectuur, integratie en delivery-capaciteit. Ik zou eerst kort valideren welk programma of team hierachter zit."
+
+          def make_rejection(item: dict, company: dict|None, reason: str) -> dict:
+              return {'company': (company or {}).get('name',''), 'title': item.get('title',''), 'url': item.get('url',''), 'source': item.get('source',''), 'reason': reason}
+
+          def parse_search_result_date(row: dict) -> str:
+              return row.get('published','')
+
+          def brave_search(query: str, api_key: str, count: int = 25) -> list[dict]:
+              if not api_key: return []
+              params = urllib.parse.urlencode({'q': query, 'country': 'nl', 'search_lang': 'nl', 'count': str(min(count,20)), 'freshness': 'pm'})
+              req = urllib.request.Request('https://api.search.brave.com/res/v1/web/search?' + params, headers={'Accept':'application/json','X-Subscription-Token': api_key})
+              try:
+                  with urllib.request.urlopen(req, timeout=20) as resp:
+                      data = json.loads(resp.read().decode('utf-8','replace'))
+              except Exception as exc:
+                  return [{'title':'SEARCH_ERROR', 'snippet':str(exc), 'url':'', 'source':'error', 'published':''}]
+              out=[]
+              for row in data.get('web',{}).get('results',[])[:count]:
+                  out.append({'title': html.unescape(row.get('title','')), 'snippet': html.unescape(row.get('description','')), 'url': row.get('url',''), 'source':'Brave Search', 'published': row.get('age','')})
+              return out
+
+          def rss_search(query: str, count: int = 25) -> list[dict]:
+              url = 'https://news.google.com/rss/search?' + urllib.parse.urlencode({'q': query, 'hl':'nl', 'gl':'NL', 'ceid':'NL:nl'})
+              try:
+                  with urllib.request.urlopen(url, timeout=18) as resp:
+                      root = ET.fromstring(resp.read())
+              except Exception as exc:
+                  return [{'title':'RSS_ERROR', 'snippet':str(exc), 'url':'', 'source':'error', 'published':''}]
+              items=[]
+              for item in root.findall('./channel/item')[:count]:
+                  title = html.unescape(item.findtext('title') or '')
+                  link = item.findtext('link') or ''
+                  desc = re.sub('<[^>]+>', ' ', item.findtext('description') or '')
+                  pub = item.findtext('pubDate') or ''
+                  items.append({'title': title, 'snippet': html.unescape(compact_spaces(desc)), 'url': link, 'source':'Google News RSS fallback', 'published': pub})
+              return items
+
+          def read_csv_items(path: Path, source_label: str) -> list[dict]:
+              if not path.exists(): return []
+              rows=[]
+              with path.open('r', encoding='utf-8-sig', newline='') as f:
+                  for r in csv.DictReader(f):
+                      rows.append({'company': compact_spaces(r.get('company','')), 'person': compact_spaces(r.get('person','') or r.get('name','')), 'role': compact_spaces(r.get('role','')), 'title': compact_spaces(r.get('title','') or r.get('text','')[:120]), 'snippet': compact_spaces(r.get('text','') or r.get('summary','') or r.get('notes','')), 'url': compact_spaces(r.get('url','')), 'published': compact_spaces(r.get('date','') or r.get('published','')), 'source': source_label})
+              return rows
+
+          def read_people_watchlist(path: Path) -> list[dict]:
+              if not path.exists(): return []
+              with path.open('r', encoding='utf-8-sig', newline='') as f:
+                  return [dict(r) for r in csv.DictReader(f)]
+
+          def event_key(signal: dict) -> str:
+              text = low(signal.get('title','') + ' ' + signal.get('snippet',''))
+              if has_any(text, ['ranzijn']) and has_any(text, ['tuinland']): return 'ma:ranzijn-tuinland'
+              base = signal.get('company','') + '|' + signal.get('category','') + '|'
+              words = [w for w in re.sub(r'[^a-z0-9]+',' ',text).split() if w not in {'de','het','een','en','van','voor','door','met','naar','the','bij','in'}]
+              return base + ' '.join(words[:12])
+
+          def run_self_tests(accounts: list[dict]) -> None:
+              def acc(name): return {'name': name, 'key': canonical_company_key(name), 'aliases': make_aliases(name), 'source_only': False, 'matched_alias': name}
               cases = [
-                  (RawItem('DOC Kaas','Melkprijs DOC Kaas gecorrigeerd door fusie met Arla - Nieuwe Oogst','Melkprijs DOC Kaas gecorrigeerd door fusie met Arla','https://www.nieuweoogst.nl/nieuws/melkprijs-doc-kaas-gecorrigeerd-door-fusie-met-arla','Nieuws'), False),
-                  (RawItem('HEMA B.V.','HEMA - Wikipedia','Het merk Reaktor is uitgefaseerd en vervangen door het HEMA-merk','https://nl.wikipedia.org/wiki/HEMA','Web'), False),
-                  (RawItem('Sonos','Sonos speakers, soundbars en soundbases | MediaMarkt','Een nieuw Sonos product kopen bij MediaMarkt? Ontdek ons assortiment','https://www.mediamarkt.nl/nl/category/sonos-123.html','Web'), False),
-                  (RawItem('Bruna B.V.','Ter Overname: Bruna winkel in Vlissingen | Franchise+','Ter Overname: Bruna winkel in Vlissingen','https://www.franchiseplus.nl/nieuws/ter-overname-bruna-winkel-in-vlissingen','Nieuws'), False),
-                  (RawItem('Ranzijn tuin & dier B.V.','Tuinland overgenomen door Ranzijn Tuin & Dier - mena.nl','Tuinland overgenomen door Ranzijn Tuin & Dier','https://mena.nl/artikel/tuinland-overgenomen-door-ranzijn-tuin-dier','Nieuws'), True),
-                  (RawItem('Intergamma B.V.','Intergamma zoekt Business Analist Data Transformatie','Voor het data transformatie programma zoeken we een Business Analist en Product Owner POS.','https://werkenbij.intergamma.nl/vacature/business-analist-data-transformatie','Vacature'), True),
-                  (RawItem('Louwman Group','Paul de Krom vertrekt na drie jaar als ceo van Louwman Group','Paul de Krom vertrekt na drie jaar als ceo van Louwman Group','https://automotive-online.nl/nieuws/paul-de-krom-vertrekt','Nieuws'), False),
+                  (acc('DOC Kaas'), {'title':'Melkprijs DOC Kaas gecorrigeerd door fusie met Arla - Nieuwe Oogst','snippet':'Melkprijs DOC Kaas gecorrigeerd door fusie met Arla','url':'https://www.nieuweoogst.nl/melkprijs','source':'test'}, False, 'melkprijs'),
+                  (acc('HEMA B.V.'), {'title':'HEMA - Wikipedia','snippet':'Het merk verkoopt elektrische apparaten','url':'https://nl.wikipedia.org/wiki/HEMA','source':'test'}, False, 'wikipedia'),
+                  ({'name':'Sonos Europe B.V.','key':'sonos','source_only':True}, {'title':'Sonos speakers, soundbars en soundbases | MediaMarkt','snippet':'Een nieuw Sonos product kopen bij MediaMarkt','url':'https://www.mediamarkt.nl/category/sonos-speakers','source':'test'}, False, 'product'),
+                  (acc('Bruna B.V.'), {'title':'Ter Overname: Bruna winkel in Vlissingen | Franchise+','snippet':'Bruna winkel in Vlissingen','url':'https://franchiseplus.nl/ter-overname-bruna-winkel-vlissingen','source':'test'}, False, 'single store'),
+                  (acc('JYSK B.V.'), {'title':'JYSK folder | JYSK aanbiedingen van deze week','snippet':'meubels en woningdecoratie','url':'https://www.jysk.nl/folder','source':'test'}, False, 'folder'),
+                  (acc('HEMA B.V.'), {'title':'Hema leent 60 mln aan Jumbo-familie Van Eerd voor eigen overname','snippet':'financiering','url':'https://fd.nl/bedrijfsleven/hema-leent','source':'test'}, False, 'financial'),
+                  (acc('Coolblue B.V.'), {'title':'Over Coolblue - Coolblue','snippet':'Coolblue Energie-klanten krijgen korting','url':'https://www.coolblue.nl/over-coolblue','source':'test'}, False, 'about'),
+                  (acc('Louwman Group'), {'title':'Paul de Krom vertrekt na drie jaar als ceo van Louwman Group','snippet':'ceo vertrekt','url':'https://www.automotive-online.nl/','source':'test'}, False, 'CEO-only'),
+                  (acc('Ranzijn tuin & dier B.V.'), {'title':'Tuinland overgenomen door Ranzijn Tuin & Dier - mena.nl','snippet':'Tuinland overgenomen door Ranzijn Tuin & Dier','url':'https://mena.nl/artikel/tuinland-overgenomen-door-ranzijn-tuin-dier','source':'test'}, True, 'Ranzijn/Tuinland'),
+                  (acc('Tuinland'), {'title':'Tuinland verkoopt alle vestigingen aan Ranzijn, hoofdkantoor in Assen sluit','snippet':'alle vestigingen','url':'https://www.rtvdrenthe.nl/nieuws/tuinland-ranzijn','source':'test'}, True, 'Tuinland all stores'),
+                  (acc('Intergamma B.V.'), {'title':'Intergamma zoekt Business Analist Data Transformatie','snippet':'Vacature Business Analist voor data transformatie en SAP programma','url':'https://werkenbij.intergamma.nl/vacatures/business-analist-data-transformatie','source':'test'}, True, 'business analyst'),
+                  (acc('HEMA B.V.'), {'title':'HEMA zoekt Product Owner POS','snippet':'Vacature voor Product Owner POS en checkout platform','url':'https://werkenbij.hema.nl/vacature/product-owner-pos','source':'test'}, True, 'POS vacancy'),
+                  (acc('Ahold Delhaize'), {'title':'Ahold Delhaize benoemt Chief Data & AI Officer','snippet':'nieuwe Chief Data & AI Officer aangesteld','url':'https://newsroom.aholddelhaize.com/chief-data-ai-officer','source':'test'}, True, 'data leader'),
+                  (acc('Retailer B.V.'), {'title':'Retailer kiest SAP S/4HANA voor ERP-transformatie','snippet':'SAP S/4HANA migratie en ERP programma','url':'https://www.consultancy.nl/news/sap-s4hana-retailer','source':'test'}, True, 'SAP transform'),
               ]
-              failures = []
-              for item, expected in cases:
-                  d = classify_item(item, comp(item.company))
-                  if d.accepted != expected:
-                      failures.append({'title': item.title, 'expected': expected, 'accepted': d.accepted, 'reason': d.reject_reason, 'category': d.category})
+              failures=[]
+              for company,item,expected,label in cases:
+                  signal,reason = classify_item(company,item)
+                  if bool(signal) != expected:
+                      failures.append({'case':label,'expected':expected,'got':bool(signal),'reason':reason,'signal':signal})
+              # Account alias self-test: exact legal names should not be required.
+              ranzijn_text = 'Tuinland overgenomen door Ranzijn Tuin & Dier'
+              matched = match_accounts(ranzijn_text, accounts)
+              if not any('ranzijn' in low(a['name']) or 'tuinland' in low(a['name']) for a in matched):
+                  failures.append({'case':'alias matching Ranzijn/Tuinland','expected':True,'got':False,'matched':matched[:3]})
               if failures:
-                  print(json.dumps({'self_test': 'failed', 'failures': failures}, indent=2, ensure_ascii=False))
-                  return 1
-              print(json.dumps({'self_test': 'ok', 'cases': len(cases)}, ensure_ascii=False))
-              return 0
-          
-          if __name__ == "__main__":
-              if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
-                  raise SystemExit(self_test())
-              raise SystemExit(main())
+                  print(json.dumps({'self_test_failures': failures}, ensure_ascii=False, indent=2)); raise SystemExit(1)
+
+          def collect_items(accounts: list[dict], api_key: str, rss_enabled: bool, include_linkedin: bool, max_results: int) -> tuple[list[dict], list[dict], dict]:
+              queries = list(SIGNAL_QUERIES)
+              if include_linkedin: queries.extend(LINKEDIN_QUERIES)
+              items, rejected = [], []
+              stats = {'queries_run':0, 'items_seen':0, 'items_matched_target':0, 'search_errors':0}
+              for label, query in queries:
+                  stats['queries_run'] += 1
+                  if api_key:
+                      found = brave_search(query, api_key, max_results)
+                  elif rss_enabled:
+                      found = rss_search(query, max_results)
+                  else:
+                      found = []
+                  for it in found:
+                      if it.get('title') in {'SEARCH_ERROR','RSS_ERROR'}:
+                          stats['search_errors'] += 1; rejected.append(make_rejection(it, None, it.get('snippet','search error'))); continue
+                      stats['items_seen'] += 1
+                      it['query_label'] = label
+                      matches = match_accounts(it.get('title','') + ' ' + it.get('snippet',''), accounts)
+                      if not matches:
+                          rejected.append(make_rejection(it, None, 'geen match met target-account/alias uit jouw lijst'))
+                          continue
+                      stats['items_matched_target'] += len(matches)
+                      for m in matches:
+                          items.append((m, it))
+                  time.sleep(0.15)
+              return items, rejected, stats
+
+          def process_items(pairs: list[tuple[dict,dict]], min_score: int) -> tuple[list[dict], list[dict]]:
+              signals, rejected = [], []
+              for company, item in pairs:
+                  signal, reason = classify_item(company, item)
+                  if signal and signal['score'] >= min_score:
+                      signals.append(signal)
+                  else:
+                      rejected.append(make_rejection(item, company, reason if not signal else 'below minimum score'))
+              # Deduplicate by event, keep highest score + strongest source.
+              best = {}
+              for s in signals:
+                  k = event_key(s)
+                  if k not in best or s['score'] > best[k]['score']:
+                      best[k] = s
+              out = sorted(best.values(), key=lambda s: (s['strength']!='Direct', -s['score'], s.get('company','')))
+              return out, rejected
+
+          def build_dashboard(data: dict) -> str:
+              payload = json.dumps(data, ensure_ascii=False)
+              return """<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CGI IT Landscape Signal Radar</title><style>
+          :root{--red:#e31937;--purple:#5236ab;--black:#000;--white:#fff;--soft:#f6f4fb;--line:#e8e4ef;--text:#111;--muted:#68606f;--ok:#0f7b45;--warn:#a66300}*{box-sizing:border-box}body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#fff;color:var(--text)}.login{min-height:100vh;display:grid;place-items:center;background:linear-gradient(135deg,#e31937 0%,#a82465 48%,#5236ab 100%);padding:24px}.login-card{background:#fff;border-radius:24px;padding:34px;max-width:500px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.25)}.brand{font-weight:800;letter-spacing:.02em;color:#000;font-size:18px;margin-bottom:8px}h1{font-size:30px;line-height:1.05;margin:0 0 12px}p{line-height:1.45}input,select{padding:14px 16px;border:1px solid var(--line);border-radius:12px;font-size:16px}input{width:100%}button{background:var(--red);color:#fff;border:0;border-radius:999px;padding:12px 18px;font-weight:700;cursor:pointer}.app{display:none}.top{background:#000;color:#fff;padding:22px 28px}.top h1{font-size:28px;margin:0 0 6px}.top p{margin:0;color:#ddd}.bar{height:8px;background:linear-gradient(90deg,#e31937,#a82465,#5236ab)}.wrap{padding:22px 28px;max-width:1500px;margin:0 auto}.grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px;margin-bottom:18px}.metric{border:1px solid var(--line);border-radius:18px;padding:16px;background:#fff}.metric b{display:block;font-size:30px;margin-top:4px}.metric span{color:var(--muted);font-size:13px}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 18px}.tab{border:1px solid var(--line);background:#fff;color:#111;padding:10px 14px;border-radius:999px}.tab.active{background:var(--purple);color:#fff;border-color:var(--purple)}.panel{display:none}.panel.active{display:block}.filters{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}.filters input,.filters select{max-width:360px}.card{border:1px solid var(--line);border-radius:20px;padding:18px;margin:13px 0;background:#fff;box-shadow:0 4px 18px rgba(82,54,171,.06)}.card.indirect{border-left:6px solid var(--purple)}.card.direct{border-left:6px solid var(--red)}.row{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}.title{font-size:18px;font-weight:800;margin:6px 0}.meta{color:var(--muted);font-size:13px}.pill{display:inline-flex;align-items:center;border-radius:999px;padding:5px 9px;margin:2px 4px 2px 0;font-size:12px;font-weight:700;background:var(--soft);color:#2d2148}.pill.red{background:#fde8ec;color:#9a0c21}.pill.purple{background:#ede8ff;color:#39207e}.pill.green{background:#e8f6ef;color:#075c35}.score{min-width:82px;text-align:center;border-radius:18px;padding:10px;background:#000;color:#fff}.score b{font-size:28px;display:block}.section{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}.section h3{font-size:13px;color:var(--purple);text-transform:uppercase;letter-spacing:.04em;margin:0 0 6px}.empty{background:var(--soft);border:1px dashed var(--purple);padding:22px;border-radius:20px;color:#2d2148}.table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);border-radius:16px;overflow:hidden}.table th,.table td{border-bottom:1px solid var(--line);text-align:left;padding:10px;font-size:13px;vertical-align:top}.table th{background:var(--soft)}code,pre{background:#f3f1f7;border:1px solid var(--line);border-radius:10px;padding:2px 6px}pre{padding:12px;overflow:auto}.reason{color:var(--muted);font-size:12px}@media(max-width:900px){.grid{grid-template-columns:1fr 1fr}.row{display:block}.score{margin-top:12px}.wrap{padding:16px}.top{padding:18px}.filters input,.filters select{max-width:100%}}
+          </style></head><body><div id="login" class="login"><div class="login-card"><div class="brand">CGI</div><h1>IT Landscape Signal Radar</h1><p>Alleen concrete IT-landschap-signalen voor Retail & Consumer Services. Geen Wikipedia, productpagina's, consumentennieuws of melkprijs.</p><input id="code" type="password" placeholder="Login code"><p><button onclick="login()">Open radar</button></p><p id="loginMsg" style="color:#e31937;font-weight:700"></p></div></div><div id="app" class="app"><div class="bar"></div><header class="top"><h1>CGI IT Landscape Signal Radar</h1><p>Calibrated strict: directe IT-signalen + gekwalificeerde formule-/ketenintegratie. Default: liever niets dan bullshit.</p></header><main class="wrap"><div class="grid" id="metrics"></div><div class="tabs" id="tabs"></div><div id="panels"></div></main></div><script id="payload" type="application/json">""" + html.escape(payload) + """</script><script>
+          const DATA=JSON.parse(document.getElementById('payload').textContent);const LOGIN=DATA.meta.login_code;function esc(s){return String(s??'').replace(/[&<>"']/g,function(m){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m];});}function login(){const v=document.getElementById('code').value;if(v===LOGIN){sessionStorage.setItem('bd_signal_login','1');showApp();}else{document.getElementById('loginMsg').textContent='Onjuiste code';}}function showApp(){document.getElementById('login').style.display='none';document.getElementById('app').style.display='block';render();}if(sessionStorage.getItem('bd_signal_login')==='1')showApp();function metric(l,v){return '<div class="metric"><span>'+esc(l)+'</span><b>'+esc(v)+'</b></div>';}function render(){document.getElementById('metrics').innerHTML=[metric('Gepubliceerde signalen',DATA.signals.length),metric('Gescannde queries',DATA.meta.queries_run),metric('Zoekresultaten gezien',DATA.meta.items_seen),metric('Target matches',DATA.meta.items_matched_target),metric('Drempel',DATA.meta.min_score)].join('');const tabs=['Signalen','Coverage','Afgewezen','IT beslissers','Setup'];document.getElementById('tabs').innerHTML=tabs.map(function(t,i){return '<button class="tab '+(i===0?'active':'')+'" onclick="tab('+i+')">'+esc(t)+'</button>';}).join('');document.getElementById('panels').innerHTML=tabs.map(function(t,i){return '<section class="panel '+(i===0?'active':'')+'" id="p'+i+'">'+panel(t)+'</section>';}).join('');}function tab(i){document.querySelectorAll('.tab').forEach(function(e,j){e.classList.toggle('active',i===j);});document.querySelectorAll('.panel').forEach(function(e,j){e.classList.toggle('active',i===j);});}function panel(t){if(t==='Signalen')return signalPanel();if(t==='Coverage')return coveragePanel();if(t==='Afgewezen')return rejectedPanel();if(t==='IT beslissers')return peoplePanel();return setupPanel();}function pill(text,cls){return '<span class="pill '+(cls||'')+'">'+esc(text)+'</span>';}function signalPanel(){if(!DATA.signals.length)return '<div class="empty"><b>Geen concrete signalen boven de drempel.</b><br>Dat kan kloppen, maar check Coverage. Als queries of target matches 0 zijn, is dit een dekkingprobleem, geen marktconclusie. Voeg een Brave Search API key of handmatige feeds toe.</div>';var cats=[...new Set(DATA.signals.map(function(s){return s.category;}))].map(function(c){return '<option>'+esc(c)+'</option>';}).join('');return '<div class="filters"><input id="q" placeholder="Zoek bedrijf, titel, categorie..." oninput="filterSignals()"><select id="cat" onchange="filterSignals()"><option value="">Alle categorieën</option>'+cats+'</select></div><div id="signalList">'+DATA.signals.map(card).join('')+'</div>';}function card(s){var cls=s.strength==='Indirect'?'indirect':'direct';var hits=(s.evidence_hits||[]).map(function(h){return pill(h,'');}).join('');return '<article class="card '+cls+'" data-search="'+esc((s.company+' '+s.title+' '+s.category).toLowerCase())+'" data-cat="'+esc(s.category)+'"><div class="row"><div><div>'+pill(s.strength,s.strength==='Indirect'?'purple':'red')+pill(s.category,'')+pill(s.confidence,'green')+'</div><div class="title">'+esc(s.company)+' — '+esc(s.title)+'</div><div class="meta">Matched alias: '+esc(s.matched_alias||'')+' · '+esc(s.source_type)+' · '+esc(s.published||'datum onbekend')+' · <a href="'+esc(s.url)+'" target="_blank" rel="noopener">Open bron</a></div><div>'+hits+'</div></div><div class="score"><b>'+esc(s.score)+'</b><span>'+esc(s.priority)+'</span></div></div><div class="section"><h3>Waarom</h3><p>'+esc(s.why)+'</p></div><div class="section"><h3>CGI-angle</h3><p>'+esc(s.cgi_angle)+'</p></div><div class="section"><h3>Actie</h3><p>'+esc(s.action)+'</p></div><div class="section"><h3>Outreach draft</h3><p>'+esc(s.outreach)+'</p></div></article>';}function filterSignals(){const q=(document.getElementById('q').value||'').toLowerCase();const c=document.getElementById('cat').value;document.querySelectorAll('#signalList .card').forEach(function(el){el.style.display=(!q||el.dataset.search.includes(q))&&(!c||el.dataset.cat===c)?'block':'none';});}function coveragePanel(){return '<div class="card"><h2>Coverage</h2><p>Versie: <b>'+esc(DATA.meta.version)+'</b><br>Laatste run: <b>'+esc(DATA.meta.generated_at_local)+'</b><br>Ruwe inputregels: <b>'+esc(DATA.meta.raw_accounts)+'</b><br>Unieke monitoraccounts: <b>'+esc(DATA.meta.unique_accounts)+'</b><br>Source-only/vendor accounts niet als retail target gescand: <b>'+esc(DATA.meta.source_only_accounts)+'</b><br>Zoekmethode: <b>'+esc(DATA.meta.search_method)+'</b><br>Zoekqueries: <b>'+esc(DATA.meta.queries_run)+'</b><br>Zoekresultaten gezien: <b>'+esc(DATA.meta.items_seen)+'</b><br>Resultaten met targetmatch: <b>'+esc(DATA.meta.items_matched_target)+'</b><br>Search errors: <b>'+esc(DATA.meta.search_errors)+'</b></p><p><b>Belangrijk:</b> deze versie gebruikt aliassen/merknamen. Dus Ranzijn tuin & dier B.V. kan matchen op Ranzijn of Ranzijn Tuin & Dier; HEMA B.V. op HEMA; Intergamma op Gamma/Karwei.</p><h3>Afwijsredenen top 15</h3><pre>'+esc(JSON.stringify(DATA.meta.reject_reasons,null,2))+'</pre></div>';}function rejectedPanel(){var rows=DATA.rejected.slice(0,400).map(function(r){return '<tr><td>'+esc(r.company||'')+'</td><td>'+esc(r.title)+'</td><td>'+esc(r.reason)+'</td><td><a href="'+esc(r.url)+'" target="_blank">bron</a></td></tr>';}).join('');return '<table class="table"><thead><tr><th>Bedrijf</th><th>Titel</th><th>Waarom afgewezen</th><th>Bron</th></tr></thead><tbody>'+rows+'</tbody></table>';}function peoplePanel(){if(!DATA.people.length)return '<div class="empty">Geen people-watchlist gevonden. Voeg <code>data/people-watchlist.csv</code> toe met company,name,role,linkedin_url,priority,notes.</div>';var rows=DATA.people.map(function(p){return '<tr><td>'+esc(p.company)+'</td><td>'+esc(p.name)+'</td><td>'+esc(p.role)+'</td><td>'+esc(p.priority||'')+'</td><td><a href="'+esc(p.linkedin_url||'')+'" target="_blank">LinkedIn</a></td></tr>';}).join('');return '<table class="table"><thead><tr><th>Bedrijf</th><th>Naam</th><th>Rol</th><th>Prio</th><th>Link</th></tr></thead><tbody>'+rows+'</tbody></table>';}function setupPanel(){return '<div class="card"><h2>Setup</h2><p>Voor automatische websignalering is <code>BRAVE_SEARCH_API_KEY</code> het beste. Zonder key gebruikt de radar Google News RSS-fallback; die ziet vooral nieuws/M&A, niet alle vacatures en LinkedIn-posts.</p><pre>Secrets:\nBRAVE_SEARCH_API_KEY\nLINKEDIN_SIGNAL_FEED_URL optioneel</pre><p>Handmatige feeds:</p><pre>data/manual-signals.csv\ncolumns: date,company,title,url,source,text\n\ndata/linkedin-signals.csv\ncolumns: date,company,person,role,url,text\n\ndata/people-watchlist.csv\ncolumns: company,name,role,linkedin_url,priority,notes</pre><p><b>Hard filter:</b> Wikipedia, productpagina\'s, consumentenaanbiedingen, melkprijs/commodity-artikelen, single-store franchiseverkopen en CEO-only items zonder IT-context worden afgewezen.</p></div>';}
+          </script></body></html>"""
+
+          def run() -> None:
+              min_score = int(os.getenv('MIN_SCORE','76') or '76')
+              max_results = int(os.getenv('MAX_RESULTS_PER_QUERY','25') or '25')
+              include_linkedin = (os.getenv('INCLUDE_LINKEDIN_PUBLIC_INDEX','false') or 'false').lower() == 'true'
+              rss_enabled = (os.getenv('ENABLE_RSS_FALLBACK','true') or 'true').lower() == 'true'
+              api_key = os.getenv('BRAVE_SEARCH_API_KEY','').strip()
+              accounts = build_accounts()
+              run_self_tests(accounts)
+
+              Path('_site').mkdir(exist_ok=True)
+              Path('data').mkdir(exist_ok=True)
+              manual = read_csv_items(Path('data/manual-signals.csv'), 'Manual signal feed')
+              linkedin = read_csv_items(Path('data/linkedin-signals.csv'), 'LinkedIn feed')
+              people = read_people_watchlist(Path('data/people-watchlist.csv'))
+
+              # Optional external signal feed.
+              feed_url = os.getenv('LINKEDIN_SIGNAL_FEED_URL','').strip()
+              if feed_url:
+                  try:
+                      with urllib.request.urlopen(feed_url, timeout=20) as resp:
+                          data = json.loads(resp.read().decode('utf-8','replace'))
+                      for row in data.get('signals',[]):
+                          linkedin.append({'company': row.get('company',''), 'person': row.get('person',''), 'role': row.get('role',''), 'title': row.get('title','') or row.get('signal','') or row.get('text','')[:120], 'snippet': row.get('summary','') or row.get('text','') or row.get('signal',''), 'url': row.get('url',''), 'published': row.get('date','') or row.get('published',''), 'source':'LinkedIn feed URL'})
+                  except Exception as exc:
+                      manual.append({'company':'Feed','title':'LINKEDIN_SIGNAL_FEED_URL error','snippet':str(exc),'url':feed_url,'source':'error','published':''})
+
+              rejected = []
+              # Manual/LinkedIn feed items can provide company explicitly, so classify them directly.
+              manual_pairs = []
+              account_by_key = {a['key']: a for a in accounts}
+              for item in manual + linkedin:
+                  key = canonical_company_key(item.get('company',''))
+                  company = account_by_key.get(key) or ({**next((a for a in accounts if any(low(item.get('company','')) == low(al) for al in a['aliases'])), {'name': item.get('company',''), 'key': key, 'aliases':[item.get('company','')], 'source_only':False})})
+                  company = {**company, 'matched_alias': item.get('company','')}
+                  manual_pairs.append((company, item))
+
+              search_pairs, search_rejected, stats = collect_items(accounts, api_key, rss_enabled, include_linkedin, max_results)
+              all_pairs = manual_pairs + search_pairs
+              signals, rejected2 = process_items(all_pairs, min_score)
+              rejected.extend(search_rejected + rejected2)
+
+              reason_counts = Counter(r.get('reason','') for r in rejected)
+              raw_rows = [r.strip() for r in COMPANIES_RAW.splitlines() if r.strip()]
+              raw_count = max(0, len(raw_rows)-1 if raw_rows and low(raw_rows[0]) == 'organisatie' else len(raw_rows))
+              meta = {
+                  'version': VERSION, 'login_code': LOGIN_CODE,
+                  'generated_at_local': NOW_UTC.astimezone(LOCAL_TZ).strftime('%d-%m-%Y %H:%M Europe/Amsterdam'),
+                  'raw_accounts': raw_count, 'unique_accounts': len(accounts), 'source_only_accounts': sum(1 for a in accounts if a.get('source_only')),
+                  'min_score': min_score, 'search_method': 'Brave Search API' if api_key else ('Google News RSS fallback' if rss_enabled else 'manual feeds only'),
+                  'queries_run': stats.get('queries_run',0), 'items_seen': stats.get('items_seen',0), 'items_matched_target': stats.get('items_matched_target',0), 'search_errors': stats.get('search_errors',0),
+                  'reject_reasons': dict(reason_counts.most_common(15))
+              }
+              data = {'meta': meta, 'signals': signals, 'rejected': rejected[:1200], 'people': people, 'accounts_sample': accounts[:50]}
+              Path('_site/signals.json').write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+              Path('_site/index.html').write_text(build_dashboard(data), encoding='utf-8')
+              summary = [
+                  '# CGI IT Landscape Signal Radar V8', '',
+                  f'- Signals: {len(signals)}', f'- Queries: {meta["queries_run"]}', f'- Items seen: {meta["items_seen"]}', f'- Target matches: {meta["items_matched_target"]}',
+                  f'- Search method: {meta["search_method"]}', '',
+                  'Deze radar publiceert alleen directe IT-landschap-signalen of gekwalificeerde formule-/ketenintegratie.'
+              ]
+              Path('_site/README.txt').write_text('\n'.join(summary), encoding='utf-8')
+              print('\n'.join(summary))
+
+          if __name__ == '__main__':
+              run()
           PY
 
-      - name: Run quality self-test
-        shell: bash
-        run: python radar.py --self-test
-
-      - name: Run CGI IT Landscape Signal Radar
+      - name: Run radar
         shell: bash
         env:
-          MAX_COMPANIES: ${{ github.event.inputs.max_companies || 'ALL' }}
-          MIN_SCORE: ${{ github.event.inputs.min_score || '78' }}
-          LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days || '30' }}
+          MIN_SCORE: ${{ github.event.inputs.min_score || '76' }}
+          MAX_RESULTS_PER_QUERY: ${{ github.event.inputs.max_results_per_query || '25' }}
           INCLUDE_LINKEDIN_PUBLIC_INDEX: ${{ github.event.inputs.include_linkedin_public_index || 'false' }}
-          ENABLE_RSS_FALLBACK: ${{ github.event.inputs.enable_rss_fallback || 'false' }}
+          ENABLE_RSS_FALLBACK: ${{ github.event.inputs.enable_rss_fallback || 'true' }}
           BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
           LINKEDIN_SIGNAL_FEED_URL: ${{ secrets.LINKEDIN_SIGNAL_FEED_URL }}
-        run: python radar.py
-
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
+        run: |
+          python -m py_compile radar.py
+          python radar.py
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
