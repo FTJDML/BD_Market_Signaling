@@ -1,4 +1,4 @@
-name: CGI Retail IT Signal Radar V11 UX Recall LinkedIn Watchlist
+name: CGI Retail IT Signal Radar V14 One YAML LinkedIn Scan
 
 on:
   workflow_dispatch:
@@ -38,7 +38,7 @@ on:
       max_queries:
         description: "Hard maximum aantal zoekqueries per run. Hoog gezet zodat LinkedIn URL-watchlist echt ruimte krijgt."
         required: false
-        default: "2200"
+        default: "3200"
       max_results_per_query:
         description: "Max resultaten per query/provider"
         required: false
@@ -46,9 +46,17 @@ on:
       include_linkedin_public_index:
         description: "Extra publieke LinkedIn company/post indexqueries. Watchlist URL scans staan hier los van."
         required: false
-        default: "false"
+        default: "true"
+      linkedin_watchlist_inline:
+        description: "Optioneel: plak LinkedIn profiel-URL's hier als je geen CSV kunt uploaden. Voor scheduled runs zet je ze in het INLINE_LINKEDIN_URLS block in deze YAML."
+        required: false
+        default: ""
+      linkedin_direct_fetch:
+        description: "true = probeer publieke LinkedIn-profielpagina's URL-voor-URL te openen zonder login/cookies. Geen bypass; alleen publieke content."
+        required: false
+        default: "true"
       people_watchlist_mode:
-        description: "off, rotating, all. all = alle URL's uit data/people-watchlist.csv proberen te scannen binnen querybudget."
+        description: "off, rotating, all. all = alle URL's uit YAML/input/repo proberen te scannen binnen querybudget."
         required: false
         default: "all"
       max_people_watchlist_scans:
@@ -59,12 +67,12 @@ on:
     - cron: "17 5 * * *"
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
 concurrency:
-  group: cgi-retail-it-signal-radar-v11
+  group: cgi-retail-it-signal-radar-v13
   cancel-in-progress: true
 
 jobs:
@@ -82,9 +90,11 @@ jobs:
       MIN_SCORE: ${{ github.event.inputs.min_score || '80' }}
       DEEP_SCAN_MODE: ${{ github.event.inputs.deep_scan_mode || 'broad_plus_rotating' }}
       MAX_COMPANY_DEEP_SCANS: ${{ github.event.inputs.max_company_deep_scans || '100' }}
-      MAX_QUERIES: ${{ github.event.inputs.max_queries || '2200' }}
+      MAX_QUERIES: ${{ github.event.inputs.max_queries || '3200' }}
       MAX_RESULTS_PER_QUERY: ${{ github.event.inputs.max_results_per_query || '10' }}
-      ENABLE_LINKEDIN_PUBLIC_INDEX: ${{ github.event.inputs.include_linkedin_public_index || 'false' }}
+      ENABLE_LINKEDIN_PUBLIC_INDEX: ${{ github.event.inputs.include_linkedin_public_index || 'true' }}
+      ENABLE_LINKEDIN_DIRECT_FETCH: ${{ github.event.inputs.linkedin_direct_fetch || 'true' }}
+      INLINE_LINKEDIN_URLS: ${{ github.event.inputs.linkedin_watchlist_inline || '' }}
       PEOPLE_WATCHLIST_MODE: ${{ github.event.inputs.people_watchlist_mode || 'all' }}
       MAX_PEOPLE_WATCHLIST_SCANS: ${{ github.event.inputs.max_people_watchlist_scans || 'ALL' }}
       ENABLE_RSS_FALLBACK: "true"
@@ -94,9 +104,16 @@ jobs:
       TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
       SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
       LINKEDIN_SIGNAL_FEED_URL: ${{ secrets.LINKEDIN_SIGNAL_FEED_URL }}
+      LINKEDIN_ALERTS_IMAP_HOST: ${{ secrets.LINKEDIN_ALERTS_IMAP_HOST }}
+      LINKEDIN_ALERTS_IMAP_PORT: ${{ secrets.LINKEDIN_ALERTS_IMAP_PORT }}
+      LINKEDIN_ALERTS_IMAP_USER: ${{ secrets.LINKEDIN_ALERTS_IMAP_USER }}
+      LINKEDIN_ALERTS_IMAP_PASSWORD: ${{ secrets.LINKEDIN_ALERTS_IMAP_PASSWORD }}
+      LINKEDIN_ALERTS_IMAP_FOLDER: ${{ secrets.LINKEDIN_ALERTS_IMAP_FOLDER }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
@@ -106,13 +123,22 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Persist pasted LinkedIn watchlist for future daily runs
+        if: ${{ github.event.inputs.linkedin_watchlist_inline != '' }}
+        shell: bash
+        env:
+          WATCHLIST_INPUT: ${{ github.event.inputs.linkedin_watchlist_inline }}
+        run: |
+          mkdir -p .radar
+          printf "%s\n" "$WATCHLIST_INPUT" > .radar/linkedin-watchlist.txt
+
       - name: Write radar application
         shell: bash
         run: |
           cat > radar.py <<'PY'
           #!/usr/bin/env python3
           from __future__ import annotations
-          import csv, datetime as dt, email.utils, hashlib, html, json, os, re, sys, time, unicodedata, urllib.parse, urllib.request, xml.etree.ElementTree as ET
+          import csv, datetime as dt, email, email.header, email.utils, hashlib, html, imaplib, json, os, re, sys, time, unicodedata, urllib.parse, urllib.request, xml.etree.ElementTree as ET
           from pathlib import Path
           from collections import Counter, defaultdict
           try:
@@ -121,13 +147,1071 @@ jobs:
               ZoneInfo = None
           
           LOGIN_CODE = "BD_Signal_26!"
-          VERSION = "v11_recall_dedupe_linkedin_watchlist_ux"
+          VERSION = "v14_one_yaml_linkedin_scan_improved_ux"
           LOCAL_TZ = ZoneInfo("Europe/Amsterdam") if ZoneInfo else dt.timezone(dt.timedelta(hours=2), name="Europe/Amsterdam")
           NOW_UTC = dt.datetime.now(dt.timezone.utc)
           NOW_LOCAL = NOW_UTC.astimezone(LOCAL_TZ)
           
           COMPANIES_RAW = "Organisatie\n4+ Bouwmaterialen B.V.\nA-Mac B.V.\nAbal Wereldwinkel Amsterdam\nAce & Tate Group B.V.\nAces Direct\nAces Direct\nAction Holding B.V.\nAGU Holding B.V.\nAhrend Nederland B.V.\nALDI Culemborg B.V.\nALDI Deventer B.V.\nALDI Groningen B.V.\nALDI Holding B.V.\nALDI Holding B.V.\nALDI Roermond B.V.\nAldi Roosendaal\nALDI Zoetermeer B.V.\nAll Saints Retail Limited\nAllego Holding B.V.\nAlliance Automotive Group Benelux B.V.\nAlliance Automotive Services\nAlliance Automotive Trading B.V.\nAltrex B.V.\nAmacom, The Amazing Company\nANAC B.V.\nAngro B.V.\nAnker Amsterdam Spirits B.V.\nApotheek Voorzorg B.V.\nApotheek Voorzorg B.V.\nApple Retail Netherlands B.V.\nApple Retail Netherlands B.V.\nArcus Nederland B.V.\nArval B.V.\nAS Watson (Europe) Retail Holdings B.V.\nAS Watson (Health & Beauty Continental Europe) B.V.\nAsian Food Group B.V.\nASICS Europe B.V.\nATAG Heating B.V.\nATAG Nederland B.V.\nATAG Nederland B.V.\nAuping Groep B.V.\nAuto Mudde & Kok B.V.\nAuto Sturm Holding B.V.\nAUTO1 European Cars B.V.\nAutobedrijf Bluekens B.V.\nAutobedrijf Bochane B.V.\nAutobedrijf van den Udenhout B.V.\nAvec B.V.\nAzerty\nAzerty\nB.A. Geurts-Janssen B.V.\nBabypark Kesteren\nBakkersteam B.V.\nBanken Champignons B.V.\nBAS Truck Center\nBAS World B.V.\nBasic-Fit N.V.\nBax-shop.nl B.V.\nBax-shop.nl B.V.\nBCC Holding Amstelveen B.V.\nBeaphar Beheer B.V.\nBever B.V.\nBever B.V.\nBison\nBMW Nederland B.V.\nBody & Fit Sportsnutrition B.V.\nBoels Topholding B.V.\nbol.com B.V.\nBoni-Markten B.V.\nBONITA Nederland\nBouwmaat Nederland B.V.\nBouwmaat Nederland B.V.\nBP Europa SE - BP Nederland\nBridgestone Mobility Solutions B.V.\nBrilmij Groep B.V.\nBrocacef Groep N.V.\nBroekhuis Dealer Holding B.V.\nBroekhuis Zwolle\nBrooks Sports B.V.\nBrooks Sports B.V.\nBruna B.V.\nBruynzeel Keukens B.V.\nBruynzeel Keukens B.V.\nBSH Huishoudapparaten B.V.\nBugaboo International B.V.\nBugaboo International B.V.\nBunnik Creations B.V.\nBunnik Plants Beheer B.V.\nBurger Food Group B.V.\nCarglass B.V.\nCarpetright\nChanel International B.V.\nChanel International B.V.\nCHEFS CULINAR\nCloetta Holland B.V.\nCoca-Cola Europacific Partners Nederland B.V.\nCole Haan International B.V.\nCole Haan International B.V.\nColgate-Palmolive Nederland B.V.\nColgate-Palmolive Nederland B.V.\nCondor Carpets B.V.\nCondor Carpets B.V.\nCONO Kaasmakers\nConverse Netherlands B.V.\nCoolblue B.V.\nCoolblue B.V.\nCoöperatie Odin U.A.\nCoöperatie Primera B.A.\nCoöperatie Primera B.A.\nCoöperatief Koninklijk Tuinbouwcentrum Horticoop U.A.\nCoöperatieve Handelsvereniging SALO U.A.\nCoöperatieve Inkoopvereniging Superunie B.A.\nCorteva Agriscience Netherlands B.V.\nCostes B.V.\nCostes Holding B.V.\nCotton Club B.V.\nCotton Club Holding B.V.\nCotton Club Holding B.V.\nCoty International B.V.\nCoty Netherlands B.V.\nCoty Netherlands B.V.\nCrocs Europe B.V.\nCRV Holding B.V.\nCycling Sports Group Europe B.V.\nCycling Sports Group Europe B.V.\nCZAV\nD&M Europe B.V.\nDaily Fresh Food B.V.\nDaily Fresh Holding B.V.\nDaka Holding B.V.\nDalli-De Klok B.V.\nDavide Campari-Milano N.V.\nDe Banden Express B.V.\nDe Banden Express B.V.\nDe Graaf Bakeries B.V.\nDe Groot Fresh Group B.V.\nDe Haan Minerale Oliën B.V.\nDe Klok Banden B.V.\nDe Klok Banden B.V.\nDe Kuyper Holding N.V.\nDe Kuyper Holding N.V.\nDe Lancelot B.V.\nDe Leeuw N.V.\nDe MandemakersGroep Holding B.V.\nDe Stiho Groep B.V.\nDecathlon Netherlands B.V.\nDeckers Benelux B.V.\nDeckers Benelux B.V.\nDeka Exploitatiemaatschappij B.V.\nDel Monte (Holland) B.V.\nDeli Home Products B.V.\nDelta Wines B.V.\nDelta Wines Holding 2 B.V.\nDepesche Vertrieb GmbH & Co KG Nederland\nDestil B.V.\nDiageo Brands\nDiageo Holdings Netherlands B.V.\nDiageo Nederland B.V.\nDille & Kamille (International) B.V.\nDO IT Organic B.V.\nDO IT Organic Food Ingredients B.V.\nDobla Beheer B.V.\nDOC Kaas\nDocMorris N.V.\nDomino's Pizza Europe B.V.\nDorita's Beauty Products B.V.\nDott\nDr. Oetker Nederland B.V.\nDrankengroothandel Henk Smit B.V.\nDuni Benelux B.V.\nDutch Flower Group B.V.\nDynaGroup B.V.\nDyson B.V.\nDyson B.V.\ne-luscious B.V.\ne-luscious B2C B.V.\nEbro Ingredients B.V.\nECCO EMEA B.V.\nECCO EMEA B.V.\nECCO EMEA Sales SE\nECCO Leather B.V.\nECOM Cocoa Holdings B.V.\nEG Retail (Netherlands) B.V.\nEgga Food B.V.\nEichholtz B.V.\nEichholtz B.V.\nEijerkamp Holding B.V.\nElburg Foods B.V.\nElectro-Cirkel RETAIL B.V.\nElectronicPartner Nederland B.V.\nElho Beheer B.V.\nEnigma Distribution Benelux B.V.\nEnpal B.V.\nENVIEM Retail B.V.\nEnviem Retail Holding B.V.\nEsschert Design B.V.\nEsschert Design B.V.\nEstee Lauder B.V.\nEstee Lauder B.V.\nEuropa Apotheek Venlo\nEuropa Apotheek Venlo\nEUROSHELL CARDS B.V.\nFerrero B.V.\nFietsvoordeelshop.nl B.V.\nFietsvoordeelshop.nl B.V.\nFixami Nederland B.V.\nFoot Locker Europe B.V.\nFoot Locker Europe.com B.V.\nFOOX | Bergsma Franeker B.V.\nGarcia B.V.\nGarmin Nederland B.V.\nGiant Europe B.V.\nGispen Nederland B.V.\nGoodyear (Nederland) B.V.\nGoossens Wonen & Slapen\nGrandVision\nH & M Hennes & Mauritz International B.V.\nHabufa Meubelen B.V.\nHans Anders Retail Group Holding B.V.\nHans Anders Retail Group Holding B.V.\nHans Geveling Supermarkten II B.V.\nHaribo The Netherlands & Belgium B.V.\nHaribo The Netherlands & Belgium B.V.\nHästens Beds International B.V.\nHästens Beds International B.V.\nHedin Automotive B.V.\nHedin Automotive Hoofddorp\nHeineken N.V.\nHEMA B.V.\nHendi Tools for Chefs\nHendi Tools for Chefs\nHenri Willig Groep\nHenri Willig Groep\nHeutink B.V.\nHeutink B.V.\nHeuver Tyres\nHilti Nederland B.V.\nHolland & Barrett\nHolland & Barrett\nHomefashion-Group B.V.\nHoogvliet Super B.V.\nHorticoop B.V.\nHorticoop B.V.\nHugo Boss Benelux B.V.\nHugo Boss Benelux B.V.\nHugo Boss Benelux Retail B.V.\nHugo Boss Benelux Retail B.V.\nHunkemöller International B.V.\nHusqvarna Nederland B.V.\nHusqvarna Nederland B.V.\nHyundai Motor Netherlands B.V.\nIddink Learning Materials B.V.\nIglo Nederland B.V.\nIglo Nederland B.V.\nIKEA B.V.\nIKEA Nederland B.V.\nIndepender\nInkoopcombinatie Sofa\nInter-Rent B.V.\nINTER-SPRINT BANDEN B.V.\nIntergamma B.V.\nIntertoys B.V.\nIntertoys B.V.\nIntra B.V.\nIntratuin Holding B.V.\nIntratuin Trade & Logistics B.V.\nIveco Nederland B.V.\nIveco Nederland B.V.\nIVECO Schouten B.V.\nIVECO Schouten B.V.\nJan Linders B.V.\nJD Sports Fashion B.V.\nJD Sports Fashion B.V.\nJeans Centre B.V.\nJYSK B.V.\nJYSK B.V.\nKamera Express Rotterdam B.V.\nKawasaki Motors Europe N.V.\nKees Smit Tuinmeubelen B.V.\nKeter Benelux B.V.\nKia Nederland B.V.\nKidsspel\nKleyn Trucks B.V.\nKoninklijke Ahold Delhaize N.V.\nKoninklijke Jumbo Food Groep B.V.\nKoninklijke Verkade N.V.\nKooistra Supermarkten Bolsward B.V.\nKooistra Supermarkten Bolsward B.V.\nKrasnapolsky Hotels & Restaurants N.V.\nKruitbosch Cycle Universe Holding B.V.\nKruitbosch Zwolle B.V.\nKwantum B.V.\nKwantum B.V.\nKwantum Holding B.V.\nL'Oréal Nederland B.V.\nLACTALIS NEDERLAND B.V.\nLagardère Travel Retail the Netherlands B.V.\nLEGO Nederland B.V.\nLEGO Nederland B.V.\nLekkerland Beheer N.V.\nLeolux Furniture Group B.V.\nLG Electronics Benelux Sales B.V.\nLidl\nLivera B.V.\nLivera B.V.\nLivit Orthopedie\nLouis Vuitton B.V.\nLouis Vuitton B.V.\nLouwman MB B.V.\nLucas Bols B.V.\nLuxottica The Netherlands B.V.\nMAAZ Cheese B.V.\nMAAZ Dairy Foods Group B.V.\nMakita Nederland B.V.\nMantel Arnhem B.V.\nMarc O'Polo Einzelhandels GmbH Dutch branch\nMarc O'Polo Einzelhandels GmbH Dutch branch\nMars Food Europe B.V.\nMars Nederland\nMattel Europa B.V.\nMaxeda DIY B.V.\nMaxeda DIY Group B.V.\nMediaMarkt Nederland\nMediq Groep\nMediq Top Holding B.V.\nMepal B.V.\nMepal B.V.\nMercedes-Benz Nederland B.V.\nMeyra Retail & Services B.V.\nMGA Entertainment (Netherlands) B.V.\nMichelin Nederland N.V.\nMichelin Nederland N.V.\nMicrosoft B.V.\nMiele Nederland B.V.\nMiele Nederland B.V.\nMirage Retail Group B.V.\nMitsubishi Motor Sales Nederland B.V.\nMitsubishi Motors Europe B.V.\nMoba Group B.V.\nMoet Hennessy (Nederland) B.V.\nMondelez Nederland B.V.\nMosa Holding B.V.\nMulberry Company (Sales) Limited\nMulberry Company (Sales) Limited\nMy Jewellery B.V.\nMy Jewellery B.V.\nNature's Pride B.V.\nNelson Schoenen B.V.\nNelson Schoenen B.V.\nNespresso Nederland B.V.\nNespresso Nederland B.V.\nNestlé Nederland B.V.\nNETTORAMA GROEP B.V.\nNettorama Merkendiscount B.V.\nNew York Pizza Management B.V.\nNEW YORKER Nederland B.V.\nNEW YORKER Nederland B.V.\nNIKE 360 Holding B.V.\nNIKE Retail\nNL Phonedeal B.V.\nNRGValue Tankstations Nederland B.V.\nNUNA International B.V.\nO'Neill Europe B.V.\nO'Neill Europe B.V.\nObelink Vrijetijdsmarkt B.V.\nObelink Vrijetijdsmarkt B.V.\nOmoda Holding B.V.\nONE Retail B.V.\nONLY Stores Holland B.V.\nOtto B.V.\nPatagonia Europe Coöperatief U.A.\nPatagonia Europe Coöperatief U.A.\nPaul Retail B.V.\nPeek & Cloppenburg Holding B.V.\nPepe Jeans Europe B.V.\nPepe Jeans Europe B.V.\nPetrol Industries B.V.\nPetrol Industries B.V.\nPets Place Boerenbond Retail B.V.\nPets Place Boerenbond Retail B.V.\nPicnic B.V.\nPicnic Nederland B.V.\nPlato B.V.\nPlieger B.V.\nPLUS Supermarkten B.V.\nPoiesz Beheer B.V.\nPoiesz Supermarkten B.V.\nPorsche Centrum Gelderland\nPorsche Centrum Twente\nPouw Dealer\nPrimark Netherlands B.V.\nProfile International N.V.\nPromessa\nPVH Brands Netherlands B.V.\nPVH Brands Netherlands B.V.\nQuooker International B.V.\nRanzijn tuin & dier B.V.\nRanzijn tuin & dier B.V.\nREV'IT! SPORT INTERNATIONAL B.V.\nREV'IT! SPORT INTERNATIONAL B.V.\nRicoh\nRituals Cosmetics Enterprise B.V.\nROSSMANN CENTRAL EUROPE B.V.\nRoyal Canin Nederland B.V.\nSamsung Electronics Benelux B.V.\nSchaap en Citroen B.V.\nSchoonenberg Hoorcomfort\nSchuurman Schoenen B.V.\nSeats and Sofas B.V.\nSelecta Netherlands B.V.\nShimano Benelux B.V.\nShoeby-Shop B.V.\nSissy-Boy B.V.\nSixt B.V.\nSkechers USA Benelux B.V.\nSkechers USA Benelux B.V.\nSlagerij Kaldenberg B.V.\nSlagerij Kaldenberg B.V.\nSligro Food Group N.V.\nSnowWorld B.V.\nSolar Nederland B.V.\nSolarToday Franchise B.V.\nSolarToday Franchise B.V.\nSoLow\nSoLow\nSonos Europe B.V.\nSony Interactive Entertainment Benelux B.V.\nSpar Holding B.V.\nSpecialized Europe B.V.\nSpecialized Europe B.V.\nSports Unlimited Retail B.V.\nStage Entertainment Holding B.V.\nStaples Nederland B.V.\nStaples Nederland B.V.\nStationsfoodstore\nStationsfoodstore\nStella Fietsen Holding B.V.\nSteve Madden Europe B.V.\nSteve Madden Europe B.V.\nStichting Wereldwinkel Aalsmeer\nStichting Wereldwinkel Arnhem-Velp\nStichting Wereldwinkel Beverwijk\nStichting Wereldwinkel Leidschendam-Voorburg\nStichting Wereldwinkel Ommen\nStichting Wereldwinkel Venray\nSuit Supply\nSuit Supply\nSvendsen Sport\nSwinkels Family Brewers\nSwiss Sense B.V.\nSwiss Sense B.V.\nTakko Nederland B.V.\nTamoil Nederland B.V.\nTer Stal Textiel B.V.\nTer Stal Textiel B.V.\nThe Phone House Netherlands B.V.\nThe Phone House Netherlands B.V.\nThe Sting B.V.\nThe Sting B.V.\nThe Walt Disney Company (Benelux) B.V.\nTimber and Building Supplies Holland N.V.\nTIP Trailer Services Netherlands B.V.\nTK Home Solutions B.V.\nTK Maxx\nTomTom Sales B.V.\nToolstation Europe B.V.\nTotalEnergies Marketing Nederland N.V.\nTP-LINK Enterprises Netherlands B.V.\nTransityre B.V.\nTuindeco Topco B.V.\nUbbink Garden B.V.\nUnder Armour Europe B.V.\nUrban Spa Beauty Junkies\nVan den Ban Autobanden B.V.\nVan Eerd Beheer B.V.\nVan Loon Retail & Foodservice B.V.\nVan Mossel Dealer Groep Nederland B.V.\nVan Oers United B.V.\nVan Tilburg Mode en Sport B.V.\nVan Tilburg Mode en Sport B.V.\nVANMOOF Global Holding\nVegro Verpleegartikelen B.V.\nVepa, the furniture factory\nVida XL B.V.\nViking Direct\nVodafone Libertel B.V.\nVolvo Car Nederland B.V.\nVolvo Group Truck Center B.V.\nVomar Holding B.V.\nVos Supermarkten Holding B.V.\nVVV Cadeaubonnen B.V.\nWelkoop Retail B.V.\nWensink Automotive B.V.\nWereldwinkel Amersfoort\nWereldwinkel Appingedam\nWereldwinkel Bergen NH\nWereldwinkel Berkel en Rodenrijs\nWereldwinkel Breda\nWereldwinkel Breukelen\nWereldwinkel Doetinchem\nWereldwinkel Dordrecht\nWereldwinkel Dronten\nWereldwinkel Epe\nWereldwinkel Maassluis\nWereldwinkel Pijnacker\nWereldwinkel Sassenheim\nWereldwinkel Tilburg\nWereldwinkel Varsseveld\nWereldwinkel Waalwijk\nWereldwinkel Zoetermeer\nWestCord Hotels B.V.\nWibra Supermarkt B.V.\nWibra Supermarkt B.V.\nWittebrug\nWittebrug (Wittebrug Autobedrijven)\nWitzand Bouwmaterialen B.V.\nWürth-Nederland B.V.\nXenos B.V.\nXenos B.V.\nXiaomi Technology Netherlands B.V.\nXXL Group B.V.\nXXL Nutrition B.V.\nYamaha Motor Europe N.V.\nYanmar Europe B.V.\nYoung Living Europe B.V.\nYourSurprise.com\nYourSurprise.com\nZara\nZara\nZeeman Groep B.V.\nZeeuw & Zeeuw FordStore Utrecht\nZeeuw & Zeeuw FordStore Utrecht\nZeeuw & Zeeuw Kia\nZeeuw & Zeeuw Renault\nnexeye B.V.\nPathé Theatres B.V.\nHornbach Bouwmarkt Nederland B.V.\nMcDonald’s Nederland B.V.\nDomino’s Pizza Netherlands B.V.\nNew York Pizza B.V.\nQ Park Operations Netherlands B.V.\nP1 Parking Nederland B.V.\nInterparking Nederland B.V.\nBrainWash Kappers B.V.\nCosmo Hairstyling B.V.\nAMI Kappers B.V.\nIKEA B.V. (NL retailentiteit, exacte naam via CI)\nDecathlon Nederland B.V.\nTeam Kappers B.V.\nKinki Kappers B.V.\nAPCOA PARKING Nederland B.V.\nLoetje Groep B.V.\nVan der Valk Services B.V. / Hotels & Restaurants (kies juiste entiteit in CI)\nJohnny’s Burger Company B.V.\nKFC Netherlands B.V.\nBlokker B.V.\nBig Bazar B.V.\nXenos B.V.\nWibra B.V.\nLeen Bakker B.V.\nKwantum B.V.\nC&A Nederland B.V.\nHunkemöller International B.V.\nLivera B.V.\nSacha Schoenen B.V.\nScapino B.V.\nSiebel Juweliers B.V.\nSchaap en Citroen B.V.\nMy Jewellery B.V.\nIntratuin Holding B.V.\nDA Drogerij Service B.V.\nSoLow B.V.\nMR MARVIS Netherlands B.V.\nde Bijenkorf\nDirk van den Broek\nGall & Gall\nHANOS Internationale Horeca Groothandel\nBeter Bed\nfonQ\nWehkamp Retail Group\nOtrium\nPlein.nl\n\nTuinland\nAlbron\nBagels & Beans\nFEBO\nDudok Horeca Groep\nPoké Perfect\nMr. Sushi Nederland\nt Zusje\ncitizenM hotels\nCorendon\nThe Social Hub\nThe Hoxton\nThe Usual Hotels\nSportCity\nOGER\nPauw\nPatta\nKing Louie\nYAYA\nLABFRESH\nEqualité\nVanMoof\nVELORETTI\nEuromaster Nederland\nTony's Chocolonely\nMarie-Stella-Maris\nFish Tales\nRoyal Swinkels\n\nOger\nNolson\ndaily paper\nYAYA\nStudio anneloes\ndenham\nwefashion\nFloris van bommel\nVanLier\nkarwei\nsuperkeukens\ndebijenkorf\nbruna\nbuzzbee\nkeurslager\nAudax\nBeterBed Holding B.V\nCool Investments\nEK Retail group\nInternationale meubel groep\nJOG Group\nUnited Retail\nTermeer Schoenen\nVan Uffelen Group\nZiengs Group\nOtrium\nFEBO\nAce & Tate (fysieke winkels NL + internationaal)\nAmac (Apple Premium Reseller) (meerdere fysieke stores)\nAthenaeum Boekhandel (meerdere locaties)\nBax Music (megastores + omnichannel)\nBurned Sports (fysieke winkels)\nEK Retail (retailorganisatie met aangesloten winkels)\nFat Phill’s (groeiende fastfood keten)\nFleurop (fysieke bloemisten netwerk)\nFOUR Amsterdam (multi-store fashion)\nGielen Lederwaren (meerdere winkels)\nJust Brands (PME, Cast Iron retailstores)\nKing Louie (eigen winkels)\nKipperij (meerdere vestigingen)\nKookhuis (fysieke winkels)\nLobbes Speelgoed (winkel + omnichannel)\nMAGIC Bodyfashion (retail + wholesale maar ook D2C)\nMantel (fietswinkels + omnichannel)\nMooie Boules (meerdere locaties horeca leisure)\nPassaSports (retailformule)\nPiercing Mania (fysieke shops)\nPoké&ZO (meerdere vestigingen)\nPower Supplements (retailformule)\nSahan Supermarkten (supermarktketen)\nSensi Seeds (shops in NL)\nSkins (SKINS Cosmetics) (meerdere stores)\nt Zusje (restaurantketen)\nThe Seafood Bar (meerdere locaties)\nThe Tosti Club (keten)\nThings I Like Things I Love (retail)\nTony’s Chocolonely (flagship retail)\ntotaalBED (meerdere winkels)\nUsed Products (grote franchiseformule)\nVan Asten Babysuperstore (grote fysieke winkel + mogelijk uitbreiding)\nVascobelo (meerdere vestigingen)\nVELORETTI (brand stores)\nWarenhuis Vanderveen (groot warenhuis)\nYoYo! Fresh Tea Bar (meerdere locaties)\nZielinski & Rozen (retail presence)\nZusss (eigen winkels)\n10DAYS (beperkte fysieke presence)\nAthenaeum (kleiner maar stabiel)\nBOB Autowas (multi locatie maar lagere IT-complexiteit)\nBandenConcurrent (fysiek + online)\nBeerens Group (automotive retail)\nBroekhuis Groep (auto retail groot)\nDusseldorp BMW MINI\nEuromaster Nederland\nFalcon Carwash\nHedin Automotive NL\nHuijink Mobility Group\nKooijman Autogroep\nKwikFit (zeer interessant, maar corporate)\nLouwman Group (groot, complex)\nMengelers Automotive\nMunsterhuis\nProfile (fietsformule)\nSpuigroep (tankstations + retail)\nVallei Auto Groep\nVan Mossel Automotive Group (zeer groot)\nWassink Autogroep\nWestfalia Campercentrum\nZeekr Europe (nieuw retailconcept)\nKwalitaria\nSubway\nFive guys\nWehkamp\nExpert\nDreamland\nUniqlo\nLucardi\nC&A\nWibra\nState of Art\nVanHaren (Schoenen)\nOmoda\nBever (outdoor)\nXenos\nFlying Tiger\nLeen Bakker\nKwantum\nPon Automotive\nGents\nSuitable\nJysk\nMaxeda DIY Group\nIntratuin\nPicnic\nSonos\nShimano\nWehkamp\nEspirit\nPearle\nRivera Maison\nDouglas\nHeineken\nOtto Group\nCameranu\nThe Magnum Ice Cream Company\nUnited Soft Drinks\nStach\nBeterhoren\nTacomundo\nVlaams broodhuys\nVan der valk\nBroodje ben\nThe society shop\nPetit bateaut\nSimon meijssen\nJoe & the juice\nMarie stella maris\nWakuli\nPauw\nGrapedistrict\nSoap\nDe pizzabakkers\nX2o badkamers\nDe echte bakker\nZonnestudio\nRob peetoom\nPhonehouse\nLivera\n\n"
           
+          # Optional no-upload mode. Paste LinkedIn URLs here when you want the YAML itself to carry the watchlist.
+          # The workflow also reads workflow_dispatch input INLINE_LINKEDIN_URLS and repository files if they exist.
+          INLINE_LINKEDIN_URLS_RAW = os.environ.get("INLINE_LINKEDIN_URLS", "") or """
+          # SINGLE-YAML WATCHLIST BLOCK
+          # Jouw LinkedIn-profiel-URL's zijn hieronder ingebed; geen extra uploadbestand nodig.
+          # Elke URL wordt gebruikt voor directe publieke fetch + profielslug/naam-search.
+          https://www.linkedin.com/in/monique-wijnands-82987a
+          https://www.linkedin.com/in/miles-b%c3%bchlmann-722824208
+          https://www.linkedin.com/in/wouter-de-koning-2652098
+          https://www.linkedin.com/in/linda-herberigs-43974299
+          https://www.linkedin.com/in/rob-schalker
+          https://www.linkedin.com/in/jelle-willems-a-z
+          https://www.linkedin.com/in/erwin-zoet-53029a1
+          https://www.linkedin.com/in/leonardo-lucas-3855282a
+          https://www.linkedin.com/in/maarten-meurs-b8708b8a
+          https://www.linkedin.com/in/lexvdv
+          https://www.linkedin.com/in/markdelange81
+          https://www.linkedin.com/in/robdebeer
+          https://www.linkedin.com/in/lendvai
+          https://www.linkedin.com/in/lenneart-scheenstra-4328405
+          https://www.linkedin.com/in/hajir-hajji-63950718
+          https://www.linkedin.com/in/jeroen-bemelmans-277018109
+          https://www.linkedin.com/in/michael-janson-11042717
+          https://www.linkedin.com/in/nezhda-chakalova-3aa82258
+          https://www.linkedin.com/in/rolandsnel
+          https://www.linkedin.com/in/nicolasterenzi
+          https://www.linkedin.com/in/pieter-sanen-5854a517
+          https://www.linkedin.com/in/oskar-van-straaten-75028945
+          https://www.linkedin.com/in/jlspencer
+          https://www.linkedin.com/in/frans-muller-05026515
+          https://www.linkedin.com/in/franca-van-helvert
+          https://www.linkedin.com/in/roelwillems
+          https://www.linkedin.com/in/natalia-wallenberg-2212021
+          https://www.linkedin.com/in/ellen-nijhof-50462442
+          https://www.linkedin.com/in/dafne-berkhout-a0409a5
+          https://www.linkedin.com/in/ron-lance-ba40827
+          https://www.linkedin.com/in/ralferbacher
+          https://www.linkedin.com/in/bryan-van-der-voort-32a4089
+          https://www.linkedin.com/in/glenrijke
+          https://www.linkedin.com/in/jeffrey-bouwmeester-0265576
+          https://www.linkedin.com/in/arina-chokati-7608a94b
+          https://www.linkedin.com/in/camillo-latumakulita-660aba87
+          https://www.linkedin.com/in/gaborkalmar
+          https://www.linkedin.com/in/joost-leijnse-a6468b184
+          https://www.linkedin.com/in/bobrietjens
+          https://www.linkedin.com/in/wilcoibes
+          https://www.linkedin.com/in/niek-gutteling-1292736
+          https://www.linkedin.com/in/maximezwart
+          https://www.linkedin.com/in/thijs-rozekrans-24bb732a
+          https://www.linkedin.com/in/vikasshh
+          https://www.linkedin.com/in/pmfmagalhaes
+          https://www.linkedin.com/in/robinalbregt
+          https://www.linkedin.com/in/kees-rusius-9bb7229
+          https://www.linkedin.com/in/marcel-hamers-50a217a
+          https://www.linkedin.com/in/lydiadehaan
+          https://www.linkedin.com/in/langenbergthomas
+          https://www.linkedin.com/in/richardengelaar
+          https://www.linkedin.com/in/han-crielaard-6a16393
+          https://www.linkedin.com/in/prasad-hegde-460b7321
+          https://www.linkedin.com/in/anne-wil-esmeijer-kip-bb22a83
+          https://www.linkedin.com/in/roderick-linker-557b6b12
+          https://www.linkedin.com/in/margriet-suijker-24b015103
+          https://www.linkedin.com/in/koenwolters
+          https://www.linkedin.com/in/gert-knol-486b903
+          https://www.linkedin.com/in/wilcobrandt
+          https://www.linkedin.com/in/niels-van-de-loo
+          https://www.linkedin.com/in/ivo-van-den-berg-a1ba3528
+          https://www.linkedin.com/in/reindrichgeerman
+          https://www.linkedin.com/in/jaapkramer
+          https://www.linkedin.com/in/bart-hofmans-5a502322
+          https://www.linkedin.com/in/maaikebesuyen
+          https://www.linkedin.com/in/johanvanes
+          https://www.linkedin.com/in/renatesportel
+          https://www.linkedin.com/in/bastiaanvanwoerden
+          https://www.linkedin.com/in/pieter-koen-rozendaal-5b4a6b96
+          https://www.linkedin.com/in/jurgen-de-bruin-694717b
+          https://www.linkedin.com/in/han-bosch-8a28a512
+          https://www.linkedin.com/in/ralph-hagmanns-09850234
+          https://www.linkedin.com/in/gideon-van-bussel-b80b2321
+          https://www.linkedin.com/in/wouter-groeneweg
+          https://www.linkedin.com/in/regina-ursinus-67210a5b
+          https://www.linkedin.com/in/albert-veldhuizen-64a713168
+          https://www.linkedin.com/in/jeffrey-visser-34248912a
+          https://www.linkedin.com/in/jeroen-schobers-294925158
+          https://www.linkedin.com/in/erik-den-hollander-5aa34162
+          https://www.linkedin.com/in/sandra-van-hardeveld-rijvordt
+          https://www.linkedin.com/in/claudia-dinnissen-599701214
+          https://www.linkedin.com/in/wijnandkas
+          https://www.linkedin.com/in/kimtrum
+          https://www.linkedin.com/in/jean-luc-verstraeten-3b5a5
+          https://www.linkedin.com/in/basdevries
+          https://www.linkedin.com/in/max-kuijkhoven
+          https://www.linkedin.com/in/%e9%9d%96%e5%ae%87-%e6%9d%8e-296945144
+          https://www.linkedin.com/in/leila-hulshof-02061417
+          https://www.linkedin.com/in/femkewouda
+          https://www.linkedin.com/in/anuka-ioseliani-7649151a6
+          https://www.linkedin.com/in/henri-de-leeuw-27b581a0
+          https://www.linkedin.com/in/dipanjan-kailthya-9b92a850
+          https://www.linkedin.com/in/pandeyankit
+          https://www.linkedin.com/in/simon-nguyen-235421a9
+          https://www.linkedin.com/in/arco-oskam-40510354
+          https://www.linkedin.com/in/cbrunt
+          https://www.linkedin.com/in/laurens-priemis-6922756
+          https://www.linkedin.com/in/corine-noordhoff-1586b416
+          https://www.linkedin.com/in/satishku
+          https://www.linkedin.com/in/waldo-viljoen-83b9401b
+          https://www.linkedin.com/in/dvanderkolk
+          https://www.linkedin.com/in/pedro-campos-3669a5163
+          https://www.linkedin.com/in/anish-ramachandran-48a61648
+          https://www.linkedin.com/in/maurice-spruijt-7848468
+          https://www.linkedin.com/in/sebastiaandejong
+          https://www.linkedin.com/in/remkoboon
+          https://www.linkedin.com/in/peter-faber-99a89118
+          https://www.linkedin.com/in/alexanderdegee
+          https://www.linkedin.com/in/lewisgyoung
+          https://www.linkedin.com/in/guusnijssen
+          https://www.linkedin.com/in/pjbakker
+          https://www.linkedin.com/in/aaronstafford
+          https://www.linkedin.com/in/jeroen-van-benthem-9923b427
+          https://www.linkedin.com/in/rene-stoker-9062234
+          https://www.linkedin.com/in/emiel-smeman-7a102913
+          https://www.linkedin.com/in/leroy-van-maurik-378b4132
+          https://www.linkedin.com/in/dennisvanrossum
+          https://www.linkedin.com/in/anna-koopman-a8734ba
+          https://www.linkedin.com/in/kanika-mittal-988ab4142
+          https://www.linkedin.com/in/liesbethaaldijk
+          https://www.linkedin.com/in/ashitshah
+          https://www.linkedin.com/in/nick-tinholt-0bba0b13a
+          https://www.linkedin.com/in/michiel-pelle-33604415
+          https://www.linkedin.com/in/hemant-mangre-438489
+          https://www.linkedin.com/in/h-capitao-86643555
+          https://www.linkedin.com/in/gijs-timmer-16604329
+          https://www.linkedin.com/in/lizan-van-der-pol-09813413
+          https://www.linkedin.com/in/gonnie-rooijendijk-22b34a82
+          https://www.linkedin.com/in/peterhoekstra3
+          https://www.linkedin.com/in/jo%c3%ablle-van-lierop-87a027116
+          https://www.linkedin.com/in/walter-zwaan-1b923119
+          https://www.linkedin.com/in/rikmulder
+          https://www.linkedin.com/in/remcodekkers
+          https://www.linkedin.com/in/franklindevocht
+          https://www.linkedin.com/in/dave-pieters-4395991
+          https://www.linkedin.com/in/joeri-gielen-286808324
+          https://www.linkedin.com/in/markuspieters
+          https://www.linkedin.com/in/baxshop
+          https://www.linkedin.com/in/jurriaantressel
+          https://www.linkedin.com/in/gustadejong
+          https://www.linkedin.com/in/andr%c3%a9-poorthuis-293a4432
+          https://www.linkedin.com/in/linda-glastra-88302842
+          https://www.linkedin.com/in/suzanfluitman
+          https://www.linkedin.com/in/rose-smits-6849203b
+          https://www.linkedin.com/in/helmerdendekker
+          https://www.linkedin.com/in/remco-rexwinkel-21a8405
+          https://www.linkedin.com/in/kelsey-van-de-nieuwenhuijzen-1b4258107
+          https://www.linkedin.com/in/fschipper
+          https://www.linkedin.com/in/jasper-logtens-aaa5b391
+          https://www.linkedin.com/in/robin-hoogendorp-96b56b87
+          https://www.linkedin.com/in/claudia-van-der-hulst-aba49119
+          https://www.linkedin.com/in/sacha-boelhouwer-77230ba3
+          https://www.linkedin.com/in/martijn-daniels
+          https://www.linkedin.com/in/robin-van-dijk-a3b600ab
+          https://www.linkedin.com/in/dion-dijkshoorn
+          https://www.linkedin.com/in/remco-woutersen-454815122
+          https://www.linkedin.com/in/bart-baetens-480655192
+          https://www.linkedin.com/in/rembrandt-g-bikkers-973a061b
+          https://www.linkedin.com/in/shella-blancaflor-6138501b
+          https://www.linkedin.com/in/jurgenvankrevel
+          https://www.linkedin.com/in/jesse-groenhout
+          https://www.linkedin.com/in/greobelgers
+          https://www.linkedin.com/in/remco-trebus-05723a59
+          https://www.linkedin.com/in/robert-kessels-bb309211
+          https://www.linkedin.com/in/davelardinois
+          https://www.linkedin.com/in/reiant-mulder-106a19
+          https://www.linkedin.com/in/toussin-pooters-3434433
+          https://www.linkedin.com/in/lars-reehorst
+          https://www.linkedin.com/in/nicolette-pouw-9891514
+          https://www.linkedin.com/in/mark-harris-90b5043
+          https://www.linkedin.com/in/rvandenhoek
+          https://www.linkedin.com/in/jorisscheepens
+          https://www.linkedin.com/in/erik-groenenberg-29137646
+          https://www.linkedin.com/in/dagmara-wilschut-06a96b48
+          https://www.linkedin.com/in/sacha-roggeveen-99522064
+          https://www.linkedin.com/in/caroline-prick-7a107b15
+          https://www.linkedin.com/in/lisette-polhout-39046327
+          https://www.linkedin.com/in/jojannekenijhuis
+          https://www.linkedin.com/in/frederiekeubels
+          https://www.linkedin.com/in/jacquelinemulders
+          https://www.linkedin.com/in/jeroen-polman-933222236
+          https://www.linkedin.com/in/vincentberends
+          https://www.linkedin.com/in/robert-hillen-5475145
+          https://www.linkedin.com/in/thomasnulle
+          https://www.linkedin.com/in/maitezubiaurre
+          https://www.linkedin.com/in/taco-bakker-9846b12
+          https://www.linkedin.com/in/dennisvanbaalen
+          https://www.linkedin.com/in/sylviavanzanten
+          https://www.linkedin.com/in/frisoblankenspoor
+          https://www.linkedin.com/in/allard-de-boer
+          https://www.linkedin.com/in/marco-bakkers-aa179859
+          https://www.linkedin.com/in/jaap-bogaerts-421174ab
+          https://www.linkedin.com/in/climmy-potgieser-270858a8
+          https://www.linkedin.com/in/martijn-spierdijk-703b492a
+          https://www.linkedin.com/in/justin-regterschot-ab06a28b
+          https://www.linkedin.com/in/remco-hofstede-4599a3
+          https://www.linkedin.com/in/marcel-van-gurp-a48aa79
+          https://www.linkedin.com/in/maurijnlegein
+          https://www.linkedin.com/in/lars-bijsterbosch-7221381a0
+          https://www.linkedin.com/in/nico-visser-870a12b
+          https://www.linkedin.com/in/martijnguijs
+          https://www.linkedin.com/in/aart-franken-54000022
+          https://www.linkedin.com/in/robin-rook-aa133a82
+          https://www.linkedin.com/in/paul-van-der-weijden-69b48b2b
+          https://www.linkedin.com/in/otto-van-den-akker-05a2b78
+          https://www.linkedin.com/in/adriaan-thierry-7764521
+          https://www.linkedin.com/in/jordan-sykes-96b38a16
+          https://www.linkedin.com/in/robdenheijer
+          https://www.linkedin.com/in/erik-schweitzer-364b39
+          https://www.linkedin.com/in/nilsdeb
+          https://www.linkedin.com/in/floris-jongh-de-33829a40
+          https://www.linkedin.com/in/robin-akeroyd-3aa6a29
+          https://www.linkedin.com/in/gerrit-bos-5a92ba225
+          https://www.linkedin.com/in/andy-luijendijk-920843176
+          https://www.linkedin.com/in/johan-den-dulk
+          https://www.linkedin.com/in/mark-de-groot-350a9918a
+          https://www.linkedin.com/in/ronaldaltena
+          https://www.linkedin.com/in/evelienvandamme
+          https://www.linkedin.com/in/klaas-van-lookeren-campagne-273331230
+          https://www.linkedin.com/in/ofer-avni-a0b2b7b3
+          https://www.linkedin.com/in/diederikvanderheijden
+          https://www.linkedin.com/in/marc-roebersen-a4b8511b
+          https://www.linkedin.com/in/elger-lodewijk-437225101
+          https://www.linkedin.com/in/vincent-vloeimans-2296442
+          https://www.linkedin.com/in/daan-marechal-ba5180a4
+          https://www.linkedin.com/in/jelle-van-elburg-397690204
+          https://www.linkedin.com/in/marlijnkruitwagen
+          https://www.linkedin.com/in/rikoooijevaar
+          https://www.linkedin.com/in/johannesvanderwindt
+          https://www.linkedin.com/in/alexreijnhout
+          https://www.linkedin.com/in/annemijn-kuenen-2914782a
+          https://www.linkedin.com/in/nishan-jonkers-45b6492
+          https://www.linkedin.com/in/timschoonderwoerd
+          https://www.linkedin.com/in/sven-van-barneveld-909b8118
+          https://www.linkedin.com/in/jeroen-gresnigt-06a1a321
+          https://www.linkedin.com/in/leonie-buitenhuis-abb778102
+          https://www.linkedin.com/in/angeloridderhof
+          https://www.linkedin.com/in/carl-damen-0a40071b
+          https://www.linkedin.com/in/sven-gardenier-b769a7150
+          https://www.linkedin.com/in/mario-arnts-457b21b
+          https://www.linkedin.com/in/gunay-uslu
+          https://www.linkedin.com/in/atilay-uslu-742922279
+          https://www.linkedin.com/in/barry-van-ginkel-29265467
+          https://www.linkedin.com/in/erhansogut
+          https://www.linkedin.com/in/tom-peeters-a9718a4
+          https://www.linkedin.com/in/%f0%9f%9a%80-emiel-mols-31422730
+          https://www.linkedin.com/in/ericklaassen
+          https://www.linkedin.com/in/dexter-driessen-8572b231
+          https://www.linkedin.com/in/robert-jan-klappe-23b60b97
+          https://www.linkedin.com/in/marco-redeker-02b39619
+          https://www.linkedin.com/in/ad-schaap-572218b
+          https://www.linkedin.com/in/rob-vissers-89ab98b9
+          https://www.linkedin.com/in/marjolein-mens-02386326
+          https://www.linkedin.com/in/thijs-frissen-0566a4162
+          https://www.linkedin.com/in/sabine-bekaroe-47546b162
+          https://www.linkedin.com/in/kevinlaan
+          https://www.linkedin.com/in/iris-warmenhoven-a008603b
+          https://www.linkedin.com/in/stijnvanwinsen
+          https://www.linkedin.com/in/andy-kanani
+          https://www.linkedin.com/in/annick-touw
+          https://www.linkedin.com/in/tijmen-kroon-51401b26
+          https://www.linkedin.com/in/henk-van-der-kaaden-54873619
+          https://www.linkedin.com/in/beckcao
+          https://www.linkedin.com/in/nico-verwoerd
+          https://www.linkedin.com/in/jaymi-cornelisse
+          https://www.linkedin.com/in/markstrijbos
+          https://www.linkedin.com/in/jochem-boot-aa186224
+          https://www.linkedin.com/in/fedorvanmullem
+          https://www.linkedin.com/in/teoman-%c3%a7elik-9788a724
+          https://www.linkedin.com/in/alex-de-boggende-0aa8b7156
+          https://www.linkedin.com/in/diederik-visser-9473482
+          https://www.linkedin.com/in/milus
+          https://www.linkedin.com/in/ekta-maheshwarii
+          https://www.linkedin.com/in/alexanderwitteveen
+          https://www.linkedin.com/in/stephanie-grosse-kamphake-87590a7
+          https://www.linkedin.com/in/cihat-ekinci-237893203
+          https://www.linkedin.com/in/remco-brandenburg-13168825
+          https://www.linkedin.com/in/joost-van-der-wal-msc
+          https://www.linkedin.com/in/claire-have-851640170
+          https://www.linkedin.com/in/mariska-pieters-99646b169
+          https://www.linkedin.com/in/hans-hein-braaksma
+          https://www.linkedin.com/in/pascal-tuinstra-60066421
+          https://www.linkedin.com/in/jankoopman
+          https://www.linkedin.com/in/antonios-vafeiadakis
+          https://www.linkedin.com/in/jan-sander-de-bie-aaa5a02a
+          https://www.linkedin.com/in/robbertlamme
+          https://www.linkedin.com/in/jordy-van-eeden-183053b3
+          https://www.linkedin.com/in/pietropardeo
+          https://www.linkedin.com/in/stoffel-thijs-9b615012
+          https://www.linkedin.com/in/martraub
+          https://www.linkedin.com/in/erwindebruin2
+          https://www.linkedin.com/in/nachocarnes
+          https://www.linkedin.com/in/albert-weier-9b1ab88
+          https://www.linkedin.com/in/maurice-hanst%c3%a9-4942b833
+          https://www.linkedin.com/in/jacco-van-de-bunt-a5b0b32b
+          https://www.linkedin.com/in/herbert-leferink-121825109
+          https://www.linkedin.com/in/dave-boom-6bb849b0
+          https://www.linkedin.com/in/paul-smulders-b577144b
+          https://www.linkedin.com/in/aart-trees-000504b3
+          https://www.linkedin.com/in/hermanbramer
+          https://www.linkedin.com/in/harmenvanes
+          https://www.linkedin.com/in/ferdi-ertekin-8bb8191
+          https://www.linkedin.com/in/jeroen-schrijver-3293a521
+          https://www.linkedin.com/in/bas-spierenburg79
+          https://www.linkedin.com/in/marten-strikwerda-47389114
+          https://www.linkedin.com/in/anneverdaasdonk
+          https://www.linkedin.com/in/jeroen-willems
+          https://www.linkedin.com/in/willem-roskam-31560353
+          https://www.linkedin.com/in/fred-van-beek-21a3225
+          https://www.linkedin.com/in/gert-jan-van-dunschoten-69006090
+          https://www.linkedin.com/in/edwin-cats-159a37119
+          https://www.linkedin.com/in/marco-oostindi%c3%abr-64810488
+          https://www.linkedin.com/in/rikklercq
+          https://www.linkedin.com/in/jelle-veenma-211a3122b
+          https://www.linkedin.com/in/tychokleinsevert
+          https://www.linkedin.com/in/annekekamphuis
+          https://www.linkedin.com/in/mathijs-tanis-9b571415
+          https://www.linkedin.com/in/gurhan-tuzemen-5910bb110
+          https://www.linkedin.com/in/kamilczarnecki
+          https://www.linkedin.com/in/verabergers
+          https://www.linkedin.com/in/emielhoosemans
+          https://www.linkedin.com/in/thalia-kleinendorst-6591951aa
+          https://www.linkedin.com/in/vivienne-raijmakers-808422100
+          https://www.linkedin.com/in/ramiz-kuznek-b861056b
+          https://www.linkedin.com/in/maud-roodenburg-a9483114b
+          https://www.linkedin.com/in/marc-valentijn-891a2a2a
+          https://www.linkedin.com/in/merijn-meintjens-80aa726
+          https://www.linkedin.com/in/john-olsen-4110512
+          https://www.linkedin.com/in/mauricejjansen
+          https://www.linkedin.com/in/ernst-van-der-waal-98a34a21
+          https://www.linkedin.com/in/dikpijl
+          https://www.linkedin.com/in/evertvanginkel1
+          https://www.linkedin.com/in/rob-de-kleijn-85b2899
+          https://www.linkedin.com/in/evert-jan-koetsier-4957359
+          https://www.linkedin.com/in/andre-unkel-12b9bb4
+          https://www.linkedin.com/in/collinmous
+          https://www.linkedin.com/in/natalie-van-der-laan-92145230
+          https://www.linkedin.com/in/dino-lobbes-1a83b615
+          https://www.linkedin.com/in/eefje-jacques-0b30611
+          https://www.linkedin.com/in/tim-rutten-2a74a127
+          https://www.linkedin.com/in/laythnm
+          https://www.linkedin.com/in/gianluca-guerrese
+          https://www.linkedin.com/in/bart-van-olphen-95881326
+          https://www.linkedin.com/in/sanderv1
+          https://www.linkedin.com/in/ben-de-ruijter-2b88072a
+          https://www.linkedin.com/in/jobstramrood
+          https://www.linkedin.com/in/jeffrey-scholman-03485b7a
+          https://www.linkedin.com/in/pauline-kaptein-2a59685
+          https://www.linkedin.com/in/ben-deetman-ba500710
+          https://www.linkedin.com/in/orrinhoogervorst
+          https://www.linkedin.com/in/jaemon
+          https://www.linkedin.com/in/steven-wijnreder-171b058
+          https://www.linkedin.com/in/anitadehart
+          https://www.linkedin.com/in/matthieu-moons-650a907
+          https://www.linkedin.com/in/umur-a%c5%9f%c4%b1k-0a103a51
+          https://www.linkedin.com/in/dennis-vermeulen-8b300712
+          https://www.linkedin.com/in/rosie-dhillon
+          https://www.linkedin.com/in/celine-desvigne-nl
+          https://www.linkedin.com/in/brian-d-65412622
+          https://www.linkedin.com/in/nienkevandestreek
+          https://www.linkedin.com/in/mark-hommelberg-5116395
+          https://www.linkedin.com/in/ron-linssen
+          https://www.linkedin.com/in/roy-kijff-8b74615
+          https://www.linkedin.com/in/sandervandongen
+          https://www.linkedin.com/in/rbeniers
+          https://www.linkedin.com/in/gostar
+          https://www.linkedin.com/in/willem-van-schieveen
+          https://www.linkedin.com/in/martin-ter-haar-97557286
+          https://www.linkedin.com/in/timbrand
+          https://www.linkedin.com/in/uladzimir-khadakouski-56846179
+          https://www.linkedin.com/in/knachesa
+          https://www.linkedin.com/in/elsmorssinkhof
+          https://www.linkedin.com/in/davidbridgfoot
+          https://www.linkedin.com/in/drtap
+          https://www.linkedin.com/in/theokraai
+          https://www.linkedin.com/in/jack-souilljee-03276019
+          https://www.linkedin.com/in/frankvankouwen
+          https://www.linkedin.com/in/max-brands-5126342a5
+          https://www.linkedin.com/in/remon-hofstede-3a42b816
+          https://www.linkedin.com/in/paul-onderstal-354199aa
+          https://www.linkedin.com/in/reyno-gaasbeek-b43768184
+          https://www.linkedin.com/in/rick-helbers-5a79b2206
+          https://www.linkedin.com/in/luca-slotboom-192638164
+          https://www.linkedin.com/in/sierd-zijlstra-14257760
+          https://www.linkedin.com/in/marco-vlaar-29701126
+          https://www.linkedin.com/in/annette-mulder-0ab103b
+          https://www.linkedin.com/in/mbelkoski
+          https://www.linkedin.com/in/bruinsma
+          https://www.linkedin.com/in/floordeheus
+          https://www.linkedin.com/in/tommaso-paracciani-b89261126
+          https://www.linkedin.com/in/saskia-egas-reparaz-486476100
+          https://www.linkedin.com/in/pieterheij
+          https://www.linkedin.com/in/chris-wekking-9372ba5
+          https://www.linkedin.com/in/thijs-van-tienen-64373685
+          https://www.linkedin.com/in/dado-dimeski-434b67131
+          https://www.linkedin.com/in/alex-slot-411330a6
+          https://www.linkedin.com/in/oghosa-gift-omorisiagbon-ab647a219
+          https://www.linkedin.com/in/matteo-pocchiari
+          https://www.linkedin.com/in/hiddevanmanen
+          https://www.linkedin.com/in/frankmatheron
+          https://www.linkedin.com/in/johan-neven-2b686b16
+          https://www.linkedin.com/in/erixx-schols-5463b112
+          https://www.linkedin.com/in/woutermeelis
+          https://www.linkedin.com/in/paul-cieraad-2b77251b
+          https://www.linkedin.com/in/erik-wouterson-064816
+          https://www.linkedin.com/in/timo-diekmeijer-3b30ab10a
+          https://www.linkedin.com/in/jacomien-alexandra-feilzer-kraal-2b860739
+          https://www.linkedin.com/in/manueldefrancisco
+          https://www.linkedin.com/in/bob-de-groot-6b807281
+          https://www.linkedin.com/in/pieter-boers-610b15
+          https://www.linkedin.com/in/nik-papathanasiou-75980b123
+          https://www.linkedin.com/in/florian-maassen-95b2b5a5
+          https://www.linkedin.com/in/teclavanvastenhoven
+          https://www.linkedin.com/in/jodivanoenen
+          https://www.linkedin.com/in/nishant-ramsaroep-15113710b
+          https://www.linkedin.com/in/erik-bossers-a549292
+          https://www.linkedin.com/in/ewaldbroekema
+          https://www.linkedin.com/in/armandtognetti
+          https://www.linkedin.com/in/djmsmit
+          https://www.linkedin.com/in/dani-moedikdo-moeliono-770272b
+          https://www.linkedin.com/in/albertcornelisse
+          https://www.linkedin.com/in/temel-van-andel-56803b47
+          https://www.linkedin.com/in/cindy-van-der-loo-27879616
+          https://www.linkedin.com/in/astrid-vlasblom-51aa029a
+          https://www.linkedin.com/in/coos-van-aalst-3731b85a
+          https://www.linkedin.com/in/roberto-lee-68200a9
+          https://www.linkedin.com/in/theodv
+          https://www.linkedin.com/in/edwin-de-maa-75743a5
+          https://www.linkedin.com/in/marc-schoonhoven-5312b4135
+          https://www.linkedin.com/in/uri-shavit-187813
+          https://www.linkedin.com/in/jeffreyjansen
+          https://www.linkedin.com/in/marvin-hogervorst-55362588
+          https://www.linkedin.com/in/roel-roelofs-66b27621
+          https://www.linkedin.com/in/dennis-den-bak-b935b925
+          https://www.linkedin.com/in/leo-d-achille-00897530
+          https://www.linkedin.com/in/marcel-van-aelst-1090693
+          https://www.linkedin.com/in/valentindumonnet
+          https://www.linkedin.com/in/joost-verhage-%f0%9f%94%b5-84ab4825
+          https://www.linkedin.com/in/brian-grevy-aaa0632
+          https://www.linkedin.com/in/gordon-smit-2b122514
+          https://www.linkedin.com/in/andrejstabuns
+          https://www.linkedin.com/in/linda-pieron-59579461
+          https://www.linkedin.com/in/marco-van-der-hulst-9881251
+          https://www.linkedin.com/in/kenita-hadi-a23b73128
+          https://www.linkedin.com/in/mandy-post
+          https://www.linkedin.com/in/jwvansetten
+          https://www.linkedin.com/in/schefferbart
+          https://www.linkedin.com/in/birgitgeiberger
+          https://www.linkedin.com/in/michalmasiarek
+          https://www.linkedin.com/in/thilek-silvadorai
+          https://www.linkedin.com/in/nickmartijn
+          https://www.linkedin.com/in/henrik-elm-22bb35232
+          https://www.linkedin.com/in/roblahaut
+          https://www.linkedin.com/in/paulgale
+          https://www.linkedin.com/in/fabiolfonseca
+          https://www.linkedin.com/in/margarita-papadopoulou-420050bb
+          https://www.linkedin.com/in/bastian-althoff-63b279106
+          https://www.linkedin.com/in/kyle-hopkins71839
+          https://www.linkedin.com/in/hansleautaud
+          https://www.linkedin.com/in/xurxo-mosquera-barreiro-7b0896b1
+          https://www.linkedin.com/in/elize-awater-179b6a1b5
+          https://www.linkedin.com/in/allamahtul-qariah-kanters-a29886b3
+          https://www.linkedin.com/in/maikel-van-der-born
+          https://www.linkedin.com/in/nickmeulenbroek
+          https://www.linkedin.com/in/irene-visser-79383475
+          https://www.linkedin.com/in/edwinmeeren
+          https://www.linkedin.com/in/jurremulder
+          https://www.linkedin.com/in/theo-schrijvers-632b3a75
+          https://www.linkedin.com/in/elaine-van-schaik-75ba7b1a
+          https://www.linkedin.com/in/leonie-vervelde-4a940135
+          https://www.linkedin.com/in/miloumertens
+          https://www.linkedin.com/in/christophe-hesters-06b31310
+          https://www.linkedin.com/in/rjvanmiddendorp
+          https://www.linkedin.com/in/erwin-wolke-5081448
+          https://www.linkedin.com/in/marc-van-willigen-31657b90
+          https://www.linkedin.com/in/constantijn-weytingh-854409
+          https://www.linkedin.com/in/gijszijderveld
+          https://www.linkedin.com/in/joep-arts-42487216
+          https://www.linkedin.com/in/mick-krijt-b0aa89136
+          https://www.linkedin.com/in/theovanelk
+          https://www.linkedin.com/in/john-pleijte-80816820
+          https://www.linkedin.com/in/edwinvgorp
+          https://www.linkedin.com/in/sander-p-3204b54
+          https://www.linkedin.com/in/jasperboth
+          https://www.linkedin.com/in/ard-blok-47691a4a
+          https://www.linkedin.com/in/eddyassies
+          https://www.linkedin.com/in/stephan-buffing-19491b130
+          https://www.linkedin.com/in/mark-zwaan-b405147
+          https://www.linkedin.com/in/peter-roctus-0b08841a
+          https://www.linkedin.com/in/anton-van-dijk-79474422
+          https://www.linkedin.com/in/albertine-kolbach-67755b16a
+          https://www.linkedin.com/in/danielvanderwal
+          https://www.linkedin.com/in/coby-van-dooren-66b5aa16
+          https://www.linkedin.com/in/arnold-faverus-a2a9866
+          https://www.linkedin.com/in/ruben-tombeng-757791172
+          https://www.linkedin.com/in/esthervisma
+          https://www.linkedin.com/in/ricardo-dekkers-75503a15
+          https://www.linkedin.com/in/kelly-lammers-7228b2108
+          https://www.linkedin.com/in/anand-nirsoe-80126a1b
+          https://www.linkedin.com/in/franc-sonnemans-8b7a175
+          https://www.linkedin.com/in/jules-derks-3729871ba
+          https://www.linkedin.com/in/julian-maestre-mones-3602b298
+          https://www.linkedin.com/in/frank-scholten-60631170
+          https://www.linkedin.com/in/rohanuppal
+          https://www.linkedin.com/in/vincent-steenhof-6795375
+          https://www.linkedin.com/in/joey-koningsbruggen-96684b307
+          https://www.linkedin.com/in/marleen-moeskops-53924236
+          https://www.linkedin.com/in/stefan-van-dooijeweerd
+          https://www.linkedin.com/in/martin-pietersma-161a3975
+          https://www.linkedin.com/in/jos-strik-21376828
+          https://www.linkedin.com/in/jurrie-van-rooijen-b217391
+          https://www.linkedin.com/in/tim-meeuwissen
+          https://www.linkedin.com/in/nielsnijdam
+          https://www.linkedin.com/in/anrico-maat-9129936
+          https://www.linkedin.com/in/roelofreitsma
+          https://www.linkedin.com/in/olivier-genoud-a0a43b
+          https://www.linkedin.com/in/scott-wakefield-35365520
+          https://www.linkedin.com/in/arjanvanderheijden01
+          https://www.linkedin.com/in/tenbokum
+          https://www.linkedin.com/in/marco-woudstra-4b2b7116
+          https://www.linkedin.com/in/bencornelisse
+          https://www.linkedin.com/in/jdekeuning
+          https://www.linkedin.com/in/bogdanmaljkovic
+          https://www.linkedin.com/in/marvinkohen
+          https://www.linkedin.com/in/paulhooijschuur
+          https://www.linkedin.com/in/dennes-veenstra-8882017b
+          https://www.linkedin.com/in/ronald-stultiens-57784488
+          https://www.linkedin.com/in/pier-paolo-righi-66b244a2
+          https://www.linkedin.com/in/arnetjalma
+          https://www.linkedin.com/in/timothy-justin-dreijer-59b27a6
+          https://www.linkedin.com/in/christopher-todd-0b5a859
+          https://www.linkedin.com/in/stuart-baxter-b7a35877
+          https://www.linkedin.com/in/kawa-koto-2bb629220
+          https://www.linkedin.com/in/janpezie
+          https://www.linkedin.com/in/diederik-van-splunter-7a568310
+          https://www.linkedin.com/in/marcblank
+          https://www.linkedin.com/in/ramja
+          https://www.linkedin.com/in/felix-smits-559511174
+          https://www.linkedin.com/in/hellobartbouter
+          https://www.linkedin.com/in/leviroelofsma
+          https://www.linkedin.com/in/randy-vaessen-787a855
+          https://www.linkedin.com/in/gertkooijman
+          https://www.linkedin.com/in/sietho-idsinga-78a87812
+          https://www.linkedin.com/in/mario-h-jungmann-242a62
+          https://www.linkedin.com/in/sandeep-bhardwaj-10b707
+          https://www.linkedin.com/in/paulo-santiago-33568114
+          https://www.linkedin.com/in/michael-glaidson-martins
+          https://www.linkedin.com/in/diogocassimiro
+          https://www.linkedin.com/in/moulisabhowmik
+          https://www.linkedin.com/in/marcus-eduardo-goncalves-b4377723
+          https://www.linkedin.com/in/rudi-vieira-martins-7263a02a
+          https://www.linkedin.com/in/eddie-perdok-2159b0150
+          https://www.linkedin.com/in/ebel-noorman-29203318
+          https://www.linkedin.com/in/brianwismans
+          https://www.linkedin.com/in/florisspin
+          https://www.linkedin.com/in/juliagodet
+          https://www.linkedin.com/in/kaixchen
+          https://www.linkedin.com/in/ron-de-dreu-88840b64
+          https://www.linkedin.com/in/gertjanpruim
+          https://www.linkedin.com/in/roel-van-zandvoort-299052171
+          https://www.linkedin.com/in/paul-traas-108828a
+          https://www.linkedin.com/in/armando-muis-8955b8ab
+          https://www.linkedin.com/in/stbeets
+          https://www.linkedin.com/in/kevin-ebben-39294a18a
+          https://www.linkedin.com/in/stefanoduringhof
+          https://www.linkedin.com/in/lotte-vink
+          https://www.linkedin.com/in/jay-jayslikker
+          https://www.linkedin.com/in/hellebrekers
+          https://www.linkedin.com/in/bertruijslidl
+          https://www.linkedin.com/in/peter-de-roos-5bb87384
+          https://www.linkedin.com/in/dluijkx
+          https://www.linkedin.com/in/lifefood-holland-87013b84
+          https://www.linkedin.com/in/marjan-overmars-03676514b
+          https://www.linkedin.com/in/lammert-pul-7105272
+          https://www.linkedin.com/in/rene-vanrijswijk-41905821
+          https://www.linkedin.com/in/marcelvandermeer
+          https://www.linkedin.com/in/michelroos
+          https://www.linkedin.com/in/themostsigkakos
+          https://www.linkedin.com/in/nunoantoniosousa
+          https://www.linkedin.com/in/dirk-zijlstra-346a3b170
+          https://www.linkedin.com/in/mark-kulk-b90a48a
+          https://www.linkedin.com/in/willemverschuur
+          https://www.linkedin.com/in/aartie-dasrath-63785917
+          https://www.linkedin.com/in/bart-maas-a834431b
+          https://www.linkedin.com/in/winnifred-noorlander-5a1aa296
+          https://www.linkedin.com/in/christian-van-diepen
+          https://www.linkedin.com/in/mandy-versteeg-2211b73a
+          https://www.linkedin.com/in/matthijs-priester-a68008109
+          https://www.linkedin.com/in/ryan-pichel-0016a4107
+          https://www.linkedin.com/in/marian-vu-b9227b91
+          https://www.linkedin.com/in/jeroen-van-der-wal-03881a45
+          https://www.linkedin.com/in/mariellegrootjans
+          https://www.linkedin.com/in/georgeschoof
+          https://www.linkedin.com/in/wouter-fijnaut-b523598a
+          https://www.linkedin.com/in/jeroencorver
+          https://www.linkedin.com/in/derk-cloosterman-907550174
+          https://www.linkedin.com/in/danny-zonnenberg-9266254
+          https://www.linkedin.com/in/rienk-veltman-aa227982
+          https://www.linkedin.com/in/christiantimjansen
+          https://www.linkedin.com/in/john-schouten-23b5227
+          https://www.linkedin.com/in/anton-kounitsyn
+          https://www.linkedin.com/in/stan-ruyten-0250b0a
+          https://www.linkedin.com/in/kikabuhrmann
+          https://www.linkedin.com/in/benjamincariou
+          https://www.linkedin.com/in/naiem-kadry-0b266a160
+          https://www.linkedin.com/in/razvan-mogos-204459151
+          https://www.linkedin.com/in/rikplompen
+          https://www.linkedin.com/in/arnoflapper
+          https://www.linkedin.com/in/justinkieft
+          https://www.linkedin.com/in/oleksandra-grafova
+          https://www.linkedin.com/in/nantko-vos-5887024
+          https://www.linkedin.com/in/jasper-de-boer-2651375
+          https://www.linkedin.com/in/dlevashov
+          https://www.linkedin.com/in/mattfromamsterdam
+          https://www.linkedin.com/in/ruudotten
+          https://www.linkedin.com/in/yvonne-haeck-4239027
+          https://www.linkedin.com/in/maartje-overmars-814b375
+          https://www.linkedin.com/in/joostgroen
+          https://www.linkedin.com/in/robert-jaspers-b8853a2
+          https://www.linkedin.com/in/laurens-knol-b00910ba
+          https://www.linkedin.com/in/lotta-deinum-43048099
+          https://www.linkedin.com/in/roy-nagel-a79a2b63
+          https://www.linkedin.com/in/joostelshof
+          https://www.linkedin.com/in/rutger-muusz-a8775bb
+          https://www.linkedin.com/in/matthewbrownuk
+          https://www.linkedin.com/in/valentijn-de-goede-83997451
+          https://www.linkedin.com/in/daniele-zanchetta
+          https://www.linkedin.com/in/steffen-hollstein-183301a9
+          https://www.linkedin.com/in/kincso-nagy-480039a3
+          https://www.linkedin.com/in/stefan-steinfort-2a2925b
+          https://www.linkedin.com/in/michel-krouwel-6188785
+          https://www.linkedin.com/in/lizadedreu
+          https://www.linkedin.com/in/roy-doomen-4a285614
+          https://www.linkedin.com/in/gijs-meeuwissen-539ab422a
+          https://www.linkedin.com/in/frankkrol
+          https://www.linkedin.com/in/pimkamerbeek
+          https://www.linkedin.com/in/ganeshchavan
+          https://www.linkedin.com/in/jaccomastenbroek
+          https://www.linkedin.com/in/richelle-eijkens-667b965
+          https://www.linkedin.com/in/veroniquerommers
+          https://www.linkedin.com/in/vera-zonneveld-825411a7
+          https://www.linkedin.com/in/mert-karabulut-1b0616127
+          https://www.linkedin.com/in/jt-oconnor
+          https://www.linkedin.com/in/claire-overwijn-6091a288
+          https://www.linkedin.com/in/judithhartvelt
+          https://www.linkedin.com/in/carlos-bau-santos-77028ba
+          https://www.linkedin.com/in/frans-kramer
+          https://www.linkedin.com/in/dennis-mok-a38802285
+          https://www.linkedin.com/in/jolanda-brink-mba
+          https://www.linkedin.com/in/jochen-munsterhuis-21147ba9
+          https://www.linkedin.com/in/jasper-bootsma-04179b236
+          https://www.linkedin.com/in/brendon-lynch
+          https://www.linkedin.com/in/anouk-van-raay-469243212
+          https://www.linkedin.com/in/bruno-robert-40587428
+          https://www.linkedin.com/in/coralie-horstink-18609712
+          https://www.linkedin.com/in/debbie-klein-bb36203
+          https://www.linkedin.com/in/steffen-van-dijk-023a394
+          https://www.linkedin.com/in/martine-roest-b2b26370
+          https://www.linkedin.com/in/wim-feijen-a7758810
+          https://www.linkedin.com/in/justin-schellekens-532003a7
+          https://www.linkedin.com/in/jornvriend
+          https://www.linkedin.com/in/bart-van-den-nieuwenhof-a2b3592
+          https://www.linkedin.com/in/marnickboerland
+          https://www.linkedin.com/in/j%c3%bcrgenvanriel
+          https://www.linkedin.com/in/marydoumtsi
+          https://www.linkedin.com/in/lmauquoi
+          https://www.linkedin.com/in/ayman-elarras-b736b2208
+          https://www.linkedin.com/in/martijn-lusink-56630159
+          https://www.linkedin.com/in/monica-van-mierlo-6a40534
+          https://www.linkedin.com/in/dennisvaneerden
+          https://www.linkedin.com/in/baanjan
+          https://www.linkedin.com/in/juliusremarque
+          https://www.linkedin.com/in/manuel-paredes-011450a8
+          https://www.linkedin.com/in/philip-sonneveldt
+          https://www.linkedin.com/in/jansen-tim
+          https://www.linkedin.com/in/moti-richter
+          https://www.linkedin.com/in/lucas-duperier
+          https://www.linkedin.com/in/joost-van-der-geer-17943b11
+          https://www.linkedin.com/in/willem-swager-a9099330
+          https://www.linkedin.com/in/e10031994
+          https://www.linkedin.com/in/danny-elevelt-5b114715
+          https://www.linkedin.com/in/wgaarenstroom
+          https://www.linkedin.com/in/andy-van-beek-021aba198
+          https://www.linkedin.com/in/kim-renkens
+          https://www.linkedin.com/in/nica-renoult-3b71976b
+          https://www.linkedin.com/in/roel-kanters-756aa44
+          https://www.linkedin.com/in/jeroenheslenfeld
+          https://www.linkedin.com/in/gokhan-kar-32359424
+          https://www.linkedin.com/in/toinelodewijks
+          https://www.linkedin.com/in/balazskis
+          https://www.linkedin.com/in/ronald-de-grauw-b77a1312
+          https://www.linkedin.com/in/marcvandenboogaard
+          https://www.linkedin.com/in/floris-boon-496ab0b2
+          https://www.linkedin.com/in/frans-hubert-a2325b11
+          https://www.linkedin.com/in/simone-ploemacher
+          https://www.linkedin.com/in/iankoulova
+          https://www.linkedin.com/in/pieter-dirk-soels-369666120
+          https://www.linkedin.com/in/frederikvandoorn1
+          https://www.linkedin.com/in/mirjam-wolven-b7103933
+          https://www.linkedin.com/in/patty-van-loenen-050068202
+          https://www.linkedin.com/in/henk-vaarkamp-6166256
+          https://www.linkedin.com/in/marten-hulleman-ba1ba76
+          https://www.linkedin.com/in/sander-kok-0843b149
+          https://www.linkedin.com/in/noortjegroot
+          https://www.linkedin.com/in/marcel-kooiman-ba916813
+          https://www.linkedin.com/in/erwin-jongkamp-10290857
+          https://www.linkedin.com/in/ellen-de-winther-72091927
+          https://www.linkedin.com/in/jurgen-van-borkulo-3b5795b5
+          https://www.linkedin.com/in/ilse-beldman-93108929
+          https://www.linkedin.com/in/remco-van-kooij-18696611
+          https://www.linkedin.com/in/sander-janssen-30b51928
+          https://www.linkedin.com/in/robtenhoove
+          https://www.linkedin.com/in/jaap-wijnsma-92730144
+          https://www.linkedin.com/in/gerritjanwitzel
+          https://www.linkedin.com/in/levi-boot-890993329
+          https://www.linkedin.com/in/felipe-melo-pizzardo-b7aa0312
+          https://www.linkedin.com/in/matthijs-de-waard-a495384b
+          https://www.linkedin.com/in/marcelmetz
+          https://www.linkedin.com/in/stefanverstraeten
+          https://www.linkedin.com/in/astrid-klementsson-8767a610a
+          https://www.linkedin.com/in/polina-saiapina
+          https://www.linkedin.com/in/jsterk
+          https://www.linkedin.com/in/carla-ferreira-03181467
+          https://www.linkedin.com/in/tahnee-izah-schlachter-25054424
+          https://www.linkedin.com/in/volkan-bas-96736263
+          https://www.linkedin.com/in/maurice-steegh-a7711917a
+          https://www.linkedin.com/in/alexandra-irimia-56744314
+          https://www.linkedin.com/in/karinakolter
+          https://www.linkedin.com/in/ma%c3%afla-louwe-380a03a
+          https://www.linkedin.com/in/marian-temmen
+          https://www.linkedin.com/in/anne-marie-botman-b13a021
+          https://www.linkedin.com/in/skieft
+          https://www.linkedin.com/in/brian-l-mcgrath
+          https://www.linkedin.com/in/deins
+          https://www.linkedin.com/in/freekgeldof
+          https://www.linkedin.com/in/alexander-volkov-1544357
+          https://www.linkedin.com/in/hannes-leukhardt-1a1b3b49
+          https://www.linkedin.com/in/frank-de-moor-23212270
+          https://www.linkedin.com/in/ronald-frijns-78b9b33
+          https://www.linkedin.com/in/daphne-gerritse-76070b4
+          https://www.linkedin.com/in/ramez-ramzy-0165b9188
+          https://www.linkedin.com/in/jane-van-paradijs-b96306137
+          https://www.linkedin.com/in/pieter-zeeuwen-215189155
+          https://www.linkedin.com/in/marouane-el-hayani-73814019a
+          https://www.linkedin.com/in/jourionderdijk
+          https://www.linkedin.com/in/paul-anders-b59b23200
+          https://www.linkedin.com/in/theo-sleurink-107b3b157
+          https://www.linkedin.com/in/ted-boeijink-52b57559
+          https://www.linkedin.com/in/jan-joost-bosman-8909134
+          https://www.linkedin.com/in/csla
+          https://www.linkedin.com/in/lennertlamie
+          https://www.linkedin.com/in/erwinhummelink
+          https://www.linkedin.com/in/adriaan-dedel-32b20247
+          https://www.linkedin.com/in/manon-post-2593666
+          https://www.linkedin.com/in/patrickkoks
+          https://www.linkedin.com/in/idriss-triande-1b8b3878
+          https://www.linkedin.com/in/mark-van-de-vijver-82087612
+          https://www.linkedin.com/in/rogier-verberne
+          https://www.linkedin.com/in/johannesdrost
+          https://www.linkedin.com/in/arwinvanderheiden
+          https://www.linkedin.com/in/nick-bogaars-7611a35
+          https://www.linkedin.com/in/thimo-werkmeester-20b71231
+          https://www.linkedin.com/in/martinmolter
+          https://www.linkedin.com/in/dick-de-brouwer-1089914
+          https://www.linkedin.com/in/joost-krol-937a3b1
+          https://www.linkedin.com/in/frans-everink-aa20701a
+          https://www.linkedin.com/in/mivos
+          https://www.linkedin.com/in/thomas-beekhuis-4a1a32109
+          https://www.linkedin.com/in/thomasboogert
+          https://www.linkedin.com/in/barry-lager-37001482
+          https://www.linkedin.com/in/armold-britstra-4a77b2235
+          https://www.linkedin.com/in/sanderreijndorp
+          https://www.linkedin.com/in/jo-an-mudde-32a42325
+          https://www.linkedin.com/in/rob-tammeling-a86868
+          https://www.linkedin.com/in/jeffrey-witteveen-4633377
+          https://www.linkedin.com/in/claudia-pouw-dullaart-912314
+          https://www.linkedin.com/in/lobke-zeijlmans-624309209
+          https://www.linkedin.com/in/koningrutger
+          https://www.linkedin.com/in/philiphillege
+          https://www.linkedin.com/in/quyn-chhatta-b352a0b8
+          https://www.linkedin.com/in/eefje-luuring-7a22171a
+          https://www.linkedin.com/in/renephilipse
+          https://www.linkedin.com/in/saskia-wassink-4762ba94
+          https://www.linkedin.com/in/michel-boonaerts-949a1383
+          https://www.linkedin.com/in/anneke-geerts-4a729051
+          https://www.linkedin.com/in/arcostrop
+          https://www.linkedin.com/in/hans-luijten-9060201
+          https://www.linkedin.com/in/camielschreuder
+          https://www.linkedin.com/in/jan-boerlage
+          https://www.linkedin.com/in/bart-luijten-888499
+          https://www.linkedin.com/in/pcwagenaar
+          https://www.linkedin.com/in/joris-van-thiel-3029261
+          https://www.linkedin.com/in/liekevanheel
+          https://www.linkedin.com/in/woltjes
+          https://www.linkedin.com/in/sjors-van-rijswijck-07228466
+          https://www.linkedin.com/in/koen-slippens-56b61496
+          https://www.linkedin.com/in/edwin-markink-a4607a42
+          https://www.linkedin.com/in/patrick-butterworth-6a058b100
+          https://www.linkedin.com/in/bjornkreijen
+          https://www.linkedin.com/in/sander-buijsrogge
+          https://www.linkedin.com/in/gerrit-buitenhuis-34705b14
+          https://www.linkedin.com/in/hannekevankeep
+          https://www.linkedin.com/in/sanderpullens
+          https://www.linkedin.com/in/hans-hendrikx-10b7b971
+          https://www.linkedin.com/in/coen-van-der-linden-aa518497
+          https://www.linkedin.com/in/claire-blok-16871b8
+          https://www.linkedin.com/in/valentin-santa-79222a107
+          https://www.linkedin.com/in/lucdejong
+          https://www.linkedin.com/in/zsuzsa-hordai-5a88bb2b
+          https://www.linkedin.com/in/david-moore-39a9b87
+          https://www.linkedin.com/in/wasmuht
+          https://www.linkedin.com/in/bas-bragt
+          https://www.linkedin.com/in/dspinedo
+          https://www.linkedin.com/in/weddepohl
+          https://www.linkedin.com/in/fidelity-chauke-27153133
+          https://www.linkedin.com/in/el-sawy
+          https://www.linkedin.com/in/varvaradeeva
+          https://www.linkedin.com/in/vandijkbram
+          https://www.linkedin.com/in/adilopulisa
+          https://www.linkedin.com/in/jan-sonneveld-7b23b68
+          https://www.linkedin.com/in/anouk-van-noord-294379204
+          https://www.linkedin.com/in/andre-kortekaas-1ab3762a
+          https://www.linkedin.com/in/ericbeurskens
+          https://www.linkedin.com/in/joey-van-voorbergen-a09a1953
+          https://www.linkedin.com/in/tessa-kuyvenhoven
+          https://www.linkedin.com/in/martin-diks
+          https://www.linkedin.com/in/leon-steeghs-4436122a
+          https://www.linkedin.com/in/marly-klomp-196103143
+          https://www.linkedin.com/in/joeyjanssen
+          https://www.linkedin.com/in/fabienne-geraedts-741a2a
+          https://www.linkedin.com/in/sanderhoekman
+          https://www.linkedin.com/in/dave-jacobs-b3a363a
+          https://www.linkedin.com/in/guus-van-herpen-393276
+          https://www.linkedin.com/in/jeroen-scholman-897b18b7
+          https://www.linkedin.com/in/ewout-gordijn-6ba335146
+          https://www.linkedin.com/in/teun-bontrup-79049113
+          https://www.linkedin.com/in/ad-mathijssen-56927826
+          https://www.linkedin.com/in/sander-de-klerk-2982ab7
+          https://www.linkedin.com/in/pien-smit-273a188b
+          https://www.linkedin.com/in/marina-marceta-0979b431
+          https://www.linkedin.com/in/patriciadelgadocascarejo
+          https://www.linkedin.com/in/mark-kundersma-7643802
+          https://www.linkedin.com/in/vickypouso
+          https://www.linkedin.com/in/phamaker
+          https://www.linkedin.com/in/simon-amor-7724635
+          https://www.linkedin.com/in/j%c3%bcrgen-mulder-83103712
+          https://www.linkedin.com/in/can-kurnaz
+          https://www.linkedin.com/in/jasperhamaker
+          https://www.linkedin.com/in/cameron-bennett-75075214
+          https://www.linkedin.com/in/benjaminsim
+          https://www.linkedin.com/in/anita-rutkai-87325932
+          https://www.linkedin.com/in/matteosilva
+          https://www.linkedin.com/in/tonycostella
+          https://www.linkedin.com/in/aracelical
+          https://www.linkedin.com/in/yuri-gliantcev-51344333
+          https://www.linkedin.com/in/alina-tonkova-4a9ba211
+          https://www.linkedin.com/in/celinegaffel
+          https://www.linkedin.com/in/anna-den-hartog-6217123
+          https://www.linkedin.com/in/biancaportulan
+          https://www.linkedin.com/in/natacha-volpini
+          https://www.linkedin.com/in/ajaykharade
+          https://www.linkedin.com/in/ozgearikokdurmaz
+          https://www.linkedin.com/in/quintonp
+          https://www.linkedin.com/in/niklasodding
+          https://www.linkedin.com/in/rademakers
+          https://www.linkedin.com/in/gilbert-kaptijn-87411017
+          https://www.linkedin.com/in/marcel-schep-410722
+          https://www.linkedin.com/in/mehmet-tolay-b6158724
+          https://www.linkedin.com/in/saurabh-verma-1476a28
+          https://www.linkedin.com/in/rachana-dongre-21812631
+          https://www.linkedin.com/in/cristianhormazabal
+          https://www.linkedin.com/in/yashbirsingh
+          https://www.linkedin.com/in/charlie-macgregor-93340b46
+          https://www.linkedin.com/in/nielssauve
+          https://www.linkedin.com/in/denis-montrelay-5485817
+          https://www.linkedin.com/in/guido-polisena-159499a2
+          https://www.linkedin.com/in/fanny-van-den-dries-730a9b11a
+          https://www.linkedin.com/in/memmagordon
+          https://www.linkedin.com/in/henkjan-boer
+          https://www.linkedin.com/in/germanomeijer
+          https://www.linkedin.com/in/jan-dijkstra-7aa03211
+          https://www.linkedin.com/in/martin-groen-7a07b13
+          https://www.linkedin.com/in/bart-van-ham-415a2144
+          https://www.linkedin.com/in/willem-hoppenbrouwers
+          https://www.linkedin.com/in/marclaros
+          https://www.linkedin.com/in/joachimdelooij
+          https://www.linkedin.com/in/rutgerkloosterboer
+          https://www.linkedin.com/in/dvoestermans
+          https://www.linkedin.com/in/naveen-raja-natesan
+          https://www.linkedin.com/in/jean-christophe-hermann-3a459560
+          https://www.linkedin.com/in/orhan-%c3%a7akaloz-1bb380a
+          https://www.linkedin.com/in/ericjjansen
+          https://www.linkedin.com/in/feikevanderwerf73
+          https://www.linkedin.com/in/wouter-de-vries-0a44665a
+          https://www.linkedin.com/in/amir-tabar-588968222
+          https://www.linkedin.com/in/michelvandenbos
+          https://www.linkedin.com/in/radjinder
+          https://www.linkedin.com/in/frits-stouten-5b33733
+          https://www.linkedin.com/in/jeroenflapper
+          https://www.linkedin.com/in/constante-roman-02725159
+          https://www.linkedin.com/in/jana-filimonova-85253b1a3
+          https://www.linkedin.com/in/chris-klinkenberg
+          https://www.linkedin.com/in/bernadettszabo
+          https://www.linkedin.com/in/houtenvane
+          https://www.linkedin.com/in/john-j-f-j-van-der-zanden-1b13a1156
+          https://www.linkedin.com/in/ivovanharen
+          https://www.linkedin.com/in/koenraadbruins
+          https://www.linkedin.com/in/bas-huijzer-172b6889
+          https://www.linkedin.com/in/bartvdmolengraft
+          https://www.linkedin.com/in/humphreyvanlee
+          https://www.linkedin.com/in/jonathan-ramackers-9b834a63
+          https://www.linkedin.com/in/mohammed-ait-rahou-73b126b6
+          https://www.linkedin.com/in/roelvdven
+          https://www.linkedin.com/in/lianne-visser-a112a1140
+          https://www.linkedin.com/in/kees-van-der-wouden-07a41012
+          https://www.linkedin.com/in/nour-eddine-ahlouch-86236630
+          https://www.linkedin.com/in/gerard-nota-2398066
+          https://www.linkedin.com/in/paul-van-tilburg-390b7823
+          https://www.linkedin.com/in/sivarvandenberg
+          https://www.linkedin.com/in/daan-meischke-3a0b0017
+          https://www.linkedin.com/in/daan-zeven
+          https://www.linkedin.com/in/dennis-van-der-burgt-546b5014
+          https://www.linkedin.com/in/jordidanielsbusiness
+          https://www.linkedin.com/in/edwinvanhalem
+          https://www.linkedin.com/in/stevenemmink
+          https://www.linkedin.com/in/mike-kemperman-74042b2a
+          https://www.linkedin.com/in/gerard-schinkel-a299b15
+          https://www.linkedin.com/in/sietse-mooren-508786bb
+          https://www.linkedin.com/in/peter-scheffer-13638722
+          https://www.linkedin.com/in/ashrafalikm
+          https://www.linkedin.com/in/narendranathans
+          https://www.linkedin.com/in/jean-pierre-czeczotka-129740103
+          https://www.linkedin.com/in/jenny-lemstra-b17868
+          https://www.linkedin.com/in/armijn-kos-29771914
+          https://www.linkedin.com/in/lex-beekmans-27414219
+          https://www.linkedin.com/in/marlijn-van-straaten
+          https://www.linkedin.com/in/edwin-wit-658a8a4
+          https://www.linkedin.com/in/marloesverdonschot
+          https://www.linkedin.com/in/remcozuijdam
+          https://www.linkedin.com/in/jelle-jaarsma-3751361b9
+          https://www.linkedin.com/in/edwin-j%c3%a4gers-06b124a
+          https://www.linkedin.com/in/joris-aperghis-09641b4
+          https://www.linkedin.com/in/lonneke-sars-a9b3b1136
+          https://www.linkedin.com/in/esmee-tijsterman
+          https://www.linkedin.com/in/nielsclaessens
+          https://www.linkedin.com/in/koaben
+          https://www.linkedin.com/in/yordan-roynev-27aa8812a
+          https://www.linkedin.com/in/laurent-jan-van-den-ham-a20ab111
+          https://www.linkedin.com/in/sanderawvanwijk
+          https://www.linkedin.com/in/sergefrijn
+          https://www.linkedin.com/in/kimmiddelweerd
+          https://www.linkedin.com/in/martijn-varwijk-7a077738
+          https://www.linkedin.com/in/marloes-bouwknegt-7455a319a
+          https://www.linkedin.com/in/joost-westhoeve-89b9559b
+          https://www.linkedin.com/in/jonhiggins
+          https://www.linkedin.com/in/timholweg
+          https://www.linkedin.com/in/bas-duijsens-8464508
+          https://www.linkedin.com/in/jeffrey-rijsdijk-353ba679
+          https://www.linkedin.com/in/haiko-huttenga-64346812a
+          https://www.linkedin.com/in/jraijmakers
+          https://www.linkedin.com/in/thijsdaniels
+          https://www.linkedin.com/in/marleen-van-drunen-59664aa5
+          https://www.linkedin.com/in/ksenia-dulesova-71a27b276
+          https://www.linkedin.com/in/erwinrombouts
+          https://www.linkedin.com/in/ton-schmitz-5b28b5126
+          https://www.linkedin.com/in/olgasukhachova
+          https://www.linkedin.com/in/tanjabruckmann
+          https://www.linkedin.com/in/ren%c3%a9-van-der-zel
+          https://www.linkedin.com/in/mvdprijt
+          https://www.linkedin.com/in/marcodraijer
+          https://www.linkedin.com/in/noahlinssen
+          https://www.linkedin.com/in/johann-willems-88a37529
+          https://www.linkedin.com/in/jacqueline-roerink-ab7a5342
+          https://www.linkedin.com/in/edeben
+          https://www.linkedin.com/in/wim-rikkers-12361b93
+          https://www.linkedin.com/in/ajit-patil-21547729
+          https://www.linkedin.com/in/eugene-tjemkes-046264b0
+          https://www.linkedin.com/in/anna-hovhannisyan-6914a15b
+          https://www.linkedin.com/in/julia-kuleshova-874890207
+          https://www.linkedin.com/in/ehtasham-akram-66b2a611
+          https://www.linkedin.com/in/fjhaalboom
+          https://www.linkedin.com/in/svetlan%d0%b0-van-til-b9305521
+          https://www.linkedin.com/in/rob-stalpers-8397a294
+          https://www.linkedin.com/in/ab-boersema-26595331
+          https://www.linkedin.com/in/marcelog-souza
+          https://www.linkedin.com/in/socrates-marquez-0622957
+          https://www.linkedin.com/in/andrebraga
+          https://www.linkedin.com/in/breno-polli-519a8522
+          https://www.linkedin.com/in/jurjan-braakhekke-1060357
+          https://www.linkedin.com/in/christoph-irmscher-48b7771a1
+          https://www.linkedin.com/in/igbalsafarov
+          https://www.linkedin.com/in/gpresti
+          https://www.linkedin.com/in/burak-ramazanoglu-25522b28
+          https://www.linkedin.com/in/marjoriemegale
+          https://www.linkedin.com/in/vitokparisi
+          https://www.linkedin.com/in/erikheidstra
+          https://www.linkedin.com/in/guyknight
+          https://www.linkedin.com/in/zhe-li-a2870857
+          https://www.linkedin.com/in/tom-eagan-18a366a
+          https://www.linkedin.com/in/gerardvandepoll
+          https://www.linkedin.com/in/jeroen-petit-36b4412
+          https://www.linkedin.com/in/tanja-witteveen-3b184119
+          https://www.linkedin.com/in/alex-jonker-92a20337
+          https://www.linkedin.com/in/alex-kuhlman-bb4911128
+          https://www.linkedin.com/in/mreitsma
+          https://www.linkedin.com/in/dmitrii-prochai-209407150
+          https://www.linkedin.com/in/marcelknigge
+          https://www.linkedin.com/in/sjoerd-bakker-9883558
+          https://www.linkedin.com/in/roy-sterenborg-77987513
+          https://www.linkedin.com/in/niekphilipsen
+          https://www.linkedin.com/in/clenn-van-schijndel-99b85058
+          https://www.linkedin.com/in/chad-samson-a3651633
+          https://www.linkedin.com/in/katinka-osinga-9749805
+          https://www.linkedin.com/in/marcella-speelmans-a8108410b
+          https://www.linkedin.com/in/ren%c3%a9-baks-2024a75
+          https://www.linkedin.com/in/martine-buis-6440592
+          https://www.linkedin.com/in/michelle-schreuders-3088b4111
+          https://www.linkedin.com/in/antoinewijsman
+          https://www.linkedin.com/in/nhartog
+          https://www.linkedin.com/in/shahin-shahkarami
+          https://www.linkedin.com/in/bastiaan-bronwasser-7891459
+          https://www.linkedin.com/in/paulmooser
+          https://www.linkedin.com/in/tjitse-lawerman-46446b20
+          https://www.linkedin.com/in/anamelara
+          https://www.linkedin.com/in/inez-hermes-53a21693
+          https://www.linkedin.com/in/anna-pervukhina-3aaab71a7
+          https://www.linkedin.com/in/marjolein-peters-voets-8566405
+          https://www.linkedin.com/in/elko-middendorp-91a93916
+          https://www.linkedin.com/in/esilverentand
+          https://www.linkedin.com/in/viktor-nikulin-503b942
+          https://www.linkedin.com/in/tiblets-zeray-demewez-2ab446b
+          https://www.linkedin.com/in/svosbergen
+          https://www.linkedin.com/in/michael-plothe-92187916
+          https://www.linkedin.com/in/nicole-swinkels-027b581
+          https://www.linkedin.com/in/nico-van-rooijen-70548118
+          https://www.linkedin.com/in/danielgebler
+          https://www.linkedin.com/in/johan-oost-a2756673
+          https://www.linkedin.com/in/gerard-hutten-92b95187
+          https://www.linkedin.com/in/ancaradulescu
+          https://www.linkedin.com/in/menno-flantua-0399a52
+          https://www.linkedin.com/in/marc-jan-kivits-b87538a
+          https://www.linkedin.com/in/stephaniekon
+          https://www.linkedin.com/in/felix-ankon%c3%a9-88a5b04
+          https://www.linkedin.com/in/olha-stelmakh-3a149b3b
+          https://www.linkedin.com/in/maikel-schippers-872558aa
+          https://www.linkedin.com/in/arnoud-de-munnik-b8125774
+          https://www.linkedin.com/in/paul-van-dijl-3305bb10
+          https://www.linkedin.com/in/mathijseijbaard
+          https://www.linkedin.com/in/ruud-oosterwijk-8588b446
+          https://www.linkedin.com/in/dennisguldenaar
+          """
+
           # ------------------------- Config -------------------------
           def env_str(name, default=""):
               return os.environ.get(name, default)
@@ -152,12 +1236,14 @@ jobs:
           SEARCH_LOOKBACK_DAYS = env_int("SEARCH_LOOKBACK_DAYS", max(INTEGRATION_LOOKBACK_DAYS, LEADERSHIP_LOOKBACK_DAYS, PROGRAM_LOOKBACK_DAYS, JOB_LOOKBACK_DAYS, SECURITY_LOOKBACK_DAYS, TENDER_LOOKBACK_DAYS))
           MIN_SCORE = env_int("MIN_SCORE", 80)
           MAX_RESULTS_PER_QUERY = env_int("MAX_RESULTS_PER_QUERY", 10)
-          MAX_QUERIES = env_int("MAX_QUERIES", 2200)
+          MAX_QUERIES = env_int("MAX_QUERIES", 3200)
           DEEP_SCAN_MODE = env_str("DEEP_SCAN_MODE", "broad_plus_rotating")
           MAX_COMPANY_DEEP_SCANS = env_int("MAX_COMPANY_DEEP_SCANS", 80)
           ENABLE_RSS_FALLBACK = env_bool("ENABLE_RSS_FALLBACK", True)
           ENABLE_GDELT = env_bool("ENABLE_GDELT", True)
-          ENABLE_LINKEDIN_PUBLIC_INDEX = env_bool("ENABLE_LINKEDIN_PUBLIC_INDEX", False)
+          ENABLE_LINKEDIN_PUBLIC_INDEX = env_bool("ENABLE_LINKEDIN_PUBLIC_INDEX", True)
+          ENABLE_LINKEDIN_DIRECT_FETCH = env_bool("ENABLE_LINKEDIN_DIRECT_FETCH", True)
+          LINKEDIN_DIRECT_FETCH_MAX_BYTES = env_int("LINKEDIN_DIRECT_FETCH_MAX_BYTES", 250000)
           DISCOVER_PEOPLE = env_bool("DISCOVER_PEOPLE", True)
           PEOPLE_WATCHLIST_MODE = env_str("PEOPLE_WATCHLIST_MODE", "all").lower()
           MAX_PEOPLE_WATCHLIST_SCANS_RAW = env_str("MAX_PEOPLE_WATCHLIST_SCANS", "ALL")
@@ -166,6 +1252,11 @@ jobs:
           TAVILY_KEY = env_str("TAVILY_API_KEY")
           SERPAPI_KEY = env_str("SERPAPI_API_KEY")
           LINKEDIN_SIGNAL_FEED_URL = env_str("LINKEDIN_SIGNAL_FEED_URL")
+          LINKEDIN_ALERTS_IMAP_HOST = env_str("LINKEDIN_ALERTS_IMAP_HOST")
+          LINKEDIN_ALERTS_IMAP_PORT = env_int("LINKEDIN_ALERTS_IMAP_PORT", 993)
+          LINKEDIN_ALERTS_IMAP_USER = env_str("LINKEDIN_ALERTS_IMAP_USER")
+          LINKEDIN_ALERTS_IMAP_PASSWORD = env_str("LINKEDIN_ALERTS_IMAP_PASSWORD")
+          LINKEDIN_ALERTS_IMAP_FOLDER = env_str("LINKEDIN_ALERTS_IMAP_FOLDER", "INBOX")
           RUN_SELF_TEST_ONLY = env_bool("RUN_SELF_TEST_ONLY", False)
           
           # ------------------------- Taxonomy -------------------------
@@ -584,6 +1675,95 @@ jobs:
               except Exception:
                   return []
           
+          def decode_header_value(value):
+              if not value: return ''
+              parts = []
+              for chunk, enc in email.header.decode_header(value):
+                  if isinstance(chunk, bytes):
+                      try: parts.append(chunk.decode(enc or 'utf-8', errors='ignore'))
+                      except Exception: parts.append(chunk.decode('utf-8', errors='ignore'))
+                  else:
+                      parts.append(str(chunk))
+              return compact_spaces(' '.join(parts))
+          
+          def message_body(msg):
+              pieces = []
+              if msg.is_multipart():
+                  for part in msg.walk():
+                      ctype = part.get_content_type()
+                      disp = str(part.get('Content-Disposition') or '').lower()
+                      if 'attachment' in disp: continue
+                      if ctype not in {'text/plain','text/html'}: continue
+                      try:
+                          payload = part.get_payload(decode=True)
+                          if payload:
+                              text = payload.decode(part.get_content_charset() or 'utf-8', errors='ignore')
+                              if ctype == 'text/html':
+                                  text = re.sub(r'<(script|style)[^>]*>.*?</\1>', ' ', text, flags=re.I|re.S)
+                                  text = re.sub(r'<[^>]+>', ' ', text)
+                              pieces.append(text)
+                      except Exception:
+                          pass
+              else:
+                  try:
+                      payload = msg.get_payload(decode=True)
+                      if payload: pieces.append(payload.decode(msg.get_content_charset() or 'utf-8', errors='ignore'))
+                  except Exception:
+                      pass
+              return compact_spaces(' '.join(pieces))[:5000]
+          
+          def linkedin_evidence_file_items():
+              out = []
+              root = Path('data/linkedin-evidence')
+              if not root.exists(): return out
+              for p in sorted(root.glob('*'))[:500]:
+                  if p.suffix.lower() not in {'.txt','.md','.html','.htm','.csv'}: continue
+                  try:
+                      raw = p.read_text(encoding='utf-8-sig', errors='ignore')
+                  except Exception:
+                      continue
+                  text = compact_spaces(re.sub(r'<[^>]+>', ' ', raw))[:5000]
+                  if not text: continue
+                  title = p.stem.replace('_',' ').replace('-',' ')
+                  out.append(item('linkedin_evidence_file','linkedin-evidence','linkedin-evidence-file','linkedin', f'LinkedIn evidence: {title}', '', text, 'LinkedIn evidence file', None, {'file': str(p)}))
+              return out
+          
+          def linkedin_alert_email_items():
+              out = []
+              if not (LINKEDIN_ALERTS_IMAP_HOST and LINKEDIN_ALERTS_IMAP_USER and LINKEDIN_ALERTS_IMAP_PASSWORD):
+                  return out
+              try:
+                  m = imaplib.IMAP4_SSL(LINKEDIN_ALERTS_IMAP_HOST, LINKEDIN_ALERTS_IMAP_PORT)
+                  m.login(LINKEDIN_ALERTS_IMAP_USER, LINKEDIN_ALERTS_IMAP_PASSWORD)
+                  m.select(LINKEDIN_ALERTS_IMAP_FOLDER or 'INBOX')
+                  since = (NOW_UTC - dt.timedelta(days=max(LOOKBACK_DAYS, LEADERSHIP_LOOKBACK_DAYS, PROGRAM_LOOKBACK_DAYS))).strftime('%d-%b-%Y')
+                  typ, data = m.search(None, 'SINCE', since)
+                  if typ != 'OK':
+                      return out
+                  ids = data[0].split()[-250:]
+                  for eid in ids:
+                      typ, msgdata = m.fetch(eid, '(RFC822)')
+                      if typ != 'OK' or not msgdata or not msgdata[0]: continue
+                      msg = email.message_from_bytes(msgdata[0][1])
+                      subject = decode_header_value(msg.get('Subject',''))
+                      sender = decode_header_value(msg.get('From',''))
+                      body = message_body(msg)
+                      hay = low(subject + ' ' + sender + ' ' + body)
+                      if 'linkedin' not in hay and 'sales navigator' not in hay:
+                          continue
+                      # Safety: process only alert-like mails, not arbitrary account/security notices.
+                      if not has_any(hay, ['cio','cto','head of data','head of digital','business analyst','business analist','data transformatie','data transformation','product owner pos','erp','sap','pos','data platform','vacature','hiring','started','new role','nieuwe functie','posted','deelde','overname','integratie']):
+                          continue
+                      d = None
+                      try: d = email.utils.parsedate_to_datetime(msg.get('Date'))
+                      except Exception: pass
+                      out.append(item('linkedin_alert_email','linkedin-alert-mailbox','linkedin-alert-email','linkedin', 'LinkedIn/Sales Navigator alert: ' + subject[:160], '', body, 'LinkedIn alert mailbox', d, {'from': sender, 'subject': subject}))
+                  try: m.logout()
+                  except Exception: pass
+              except Exception:
+                  pass
+              return out
+          
           def manual_items():
               out = []
               for row in read_csv('data/manual-signals.csv'):
@@ -603,6 +1783,8 @@ jobs:
                           out.append(item('linkedin_remote_feed', 'linkedin-feed', 'linkedin-remote-feed', 'linkedin', title, row.get('url',''), txt, 'LinkedIn remote feed', row.get('date') or row.get('published'), row))
                   except Exception:
                       pass
+              out.extend(linkedin_evidence_file_items())
+              out.extend(linkedin_alert_email_items())
               return out
           
           def normalize_linkedin_url(url):
@@ -659,7 +1841,7 @@ jobs:
           def people_watchlist():
               rows = []
               seen = set()
-              paths = ['data/people-watchlist.csv', 'data/people-watchlist.txt', 'data/linkedin-watchlist.txt', 'data/linkedin-urls.csv']
+              paths = ['.radar/linkedin-watchlist.txt', 'data/people-watchlist.csv', 'data/people-watchlist.txt', 'data/linkedin-watchlist.txt', 'data/linkedin-urls.csv']
               for path in paths:
                   p = Path(path)
                   if not p.exists():
@@ -694,6 +1876,13 @@ jobs:
                       if u in seen: continue
                       seen.add(u)
                       rows.append({'company':'','name':guess_name_from_linkedin_url(u),'role':'','linkedin_url':u,'slug':linkedin_slug(u),'priority':'B','notes':'','source_file':path,'needs_enrichment':True})
+              # No-upload mode: allow the workflow YAML itself or a workflow_dispatch input to carry URL rows.
+              inline_raw = INLINE_LINKEDIN_URLS_RAW or ''
+              if inline_raw.strip():
+                  for u in extract_linkedin_urls(inline_raw):
+                      if u in seen: continue
+                      seen.add(u)
+                      rows.append({'company':'','name':guess_name_from_linkedin_url(u),'role':'','linkedin_url':u,'slug':linkedin_slug(u),'priority':'B','notes':'inline YAML/input watchlist','source_file':'inline_yaml_or_dispatch_input','needs_enrichment':True})
               return rows
           
           def selected_people_for_scan(watchlist):
@@ -733,12 +1922,80 @@ jobs:
                   elif url:
                       queries.append(('people-watchlist-url-exact', f'"{url}" {signal_terms}', 'linkedin'))
               return queries
+          def strip_html_text(raw):
+              raw = re.sub(r'<script[\s\S]*?</script>', ' ', raw or '', flags=re.I)
+              raw = re.sub(r'<style[\s\S]*?</style>', ' ', raw, flags=re.I)
+              raw = re.sub(r'<[^>]+>', ' ', raw)
+              return compact_spaces(html.unescape(raw))
+
+          def fetch_public_url(url, timeout=10):
+              req = urllib.request.Request(url, headers={
+                  'User-Agent':'Mozilla/5.0 (compatible; CGI-Signal-Radar/13; +https://github.com/)',
+                  'Accept':'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                  'Accept-Language':'en-US,en;q=0.8,nl;q=0.7'
+              })
+              with urllib.request.urlopen(req, timeout=timeout) as resp:
+                  data = resp.read(LINKEDIN_DIRECT_FETCH_MAX_BYTES)
+                  ctype = resp.headers.get('content-type','')
+                  status = getattr(resp, 'status', None) or resp.getcode()
+                  return status, ctype, data.decode('utf-8', errors='ignore')
+
+          def fetch_linkedin_profile_pages(watchlist_selected, coverage):
+              """Best-effort public fetch of exactly the supplied LinkedIn URLs.
+
+              This is not login scraping and does not bypass access controls. It simply attempts to open each
+              public profile URL anonymously. If LinkedIn returns an auth wall / challenge / empty public page,
+              the dashboard shows that status. A profile fetch can create people candidates, but only concrete
+              IT/hiring/change evidence can become a business signal.
+              """
+              items=[]
+              status_rows=[]
+              if not ENABLE_LINKEDIN_DIRECT_FETCH or not watchlist_selected:
+                  coverage['linkedin_direct_fetch_enabled'] = ENABLE_LINKEDIN_DIRECT_FETCH
+                  coverage['linkedin_direct_fetch_attempted'] = 0
+                  coverage['linkedin_direct_fetch_accessible'] = 0
+                  coverage['linkedin_direct_fetch_blocked'] = 0
+                  return items, status_rows
+              max_profiles = min(len(watchlist_selected), MAX_PEOPLE_WATCHLIST_SCANS if MAX_PEOPLE_WATCHLIST_SCANS < 10**8 else len(watchlist_selected), 250)
+              coverage['linkedin_direct_fetch_enabled'] = True
+              coverage['linkedin_direct_fetch_attempted'] = max_profiles
+              accessible=0; blocked=0
+              for p in watchlist_selected[:max_profiles]:
+                  url=(p.get('linkedin_url') or '').strip()
+                  if not url: continue
+                  slug=p.get('slug') or linkedin_slug(url)
+                  name=p.get('name') or guess_name_from_linkedin_url(url)
+                  try:
+                      status, ctype, raw = fetch_public_url(url)
+                      txt = strip_html_text(raw)
+                      ltxt=low(txt)
+                      is_wall = any(t in ltxt for t in ['sign in', 'join linkedin', 'authwall', 'login', 'checkpoint', 'captcha', 'unusual traffic']) and not has_any(txt, LEADERSHIP_ROLES + IT_ROLES)
+                      if is_wall or len(txt) < 120:
+                          blocked += 1
+                          status_rows.append({'name':name,'linkedin_url':url,'status':'blocked_or_login_wall','http_status':status,'bytes':len(raw),'snippet':txt[:180]})
+                          continue
+                      accessible += 1
+                      status_rows.append({'name':name,'linkedin_url':url,'status':'public_content_seen','http_status':status,'bytes':len(raw),'snippet':txt[:220]})
+                      # People candidate item. It will not be published as signal unless classification sees a concrete event.
+                      items.append({'provider':'linkedin_direct_fetch','kind':'people','query_pack':'people-watchlist-direct-profile-fetch','query':url,'title':name + ' LinkedIn profile','url':url,'source':'LinkedIn public profile direct fetch','published':None,'snippet':txt[:1200]})
+                      # Optional profile evidence item. Usually rejected unless it contains concrete signal terms like started/new role/hiring + IT role.
+                      if has_any(txt, IT_ROLES + LEADERSHIP_ROLES) and has_any(txt, LEADERSHIP_EVENTS + JOB_TERMS + CHANGE_TERMS):
+                          items.append({'provider':'linkedin_direct_fetch','kind':'linkedin','query_pack':'people-watchlist-direct-profile-fetch','query':url,'title':name + ' LinkedIn public profile evidence','url':url,'source':'LinkedIn public profile direct fetch','published':NOW_UTC,'snippet':txt[:1600]})
+                  except Exception as e:
+                      blocked += 1
+                      status_rows.append({'name':name,'linkedin_url':url,'status':'fetch_error','http_status':'','bytes':0,'snippet':str(e)[:220]})
+                  time.sleep(0.15)
+              coverage['linkedin_direct_fetch_accessible'] = accessible
+              coverage['linkedin_direct_fetch_blocked'] = blocked
+              coverage['linkedin_direct_fetch_status_rows'] = status_rows[:400]
+              return items, status_rows
+
           # ------------------------- Classification -------------------------
           def source_type(x):
               d = domain_of(x.get('url'))
               p = path_of(x.get('url'))
               provider = x.get('provider','')
-              if provider in {'manual_feed','linkedin_signal_feed','linkedin_remote_feed'}: return provider
+              if provider in {'manual_feed','linkedin_signal_feed','linkedin_remote_feed','linkedin_alert_email','linkedin_evidence_file'}: return provider
               if 'linkedin.com' in d: return 'linkedin_public_index'
               if any(j in d or j in p for j in JOB_DOMAINS): return 'jobs/careers'
               if any(s in d for s in STRONG_NEWS_DOMAINS) or provider in {'google_news_rss','serpapi_news','gdelt'}: return 'news/search'
@@ -784,7 +2041,7 @@ jobs:
               is_security = has_any(text, SECURITY_TERMS) and not (matched_terms(text, SECURITY_TERMS) == ['iam'])
               is_program = has_any(text, IT_LANDSCAPE_TERMS) and has_any(text, CHANGE_TERMS)
               is_ma = is_qualified_ma(text)
-              if stype in {'manual_feed','linkedin_signal_feed','linkedin_remote_feed'}:
+              if stype in {'manual_feed','linkedin_signal_feed','linkedin_remote_feed','linkedin_alert_email','linkedin_evidence_file'}:
                   return max(LEADERSHIP_LOOKBACK_DAYS, PROGRAM_LOOKBACK_DAYS, INTEGRATION_LOOKBACK_DAYS)
               if is_job:
                   return JOB_LOOKBACK_DAYS
@@ -831,7 +2088,7 @@ jobs:
               max_age_for_item = freshness_limit_for_text(text, stype)
               if not reject:
                   if x_age is None:
-                      if stype in {'manual_feed','linkedin_signal_feed','linkedin_remote_feed'}:
+                      if stype in {'manual_feed','linkedin_signal_feed','linkedin_remote_feed','linkedin_alert_email','linkedin_evidence_file'}:
                           pass
                       elif stype == 'jobs/careers' and is_job_candidate:
                           pass
@@ -865,7 +2122,7 @@ jobs:
           
               if role_hits and job_hits:
                   category = 'IT-vacature / capability demand'
-                  score = 94 if stype in {'jobs/careers','serpapi_jobs','linkedin_signal_feed','manual_feed'} else 88
+                  score = 94 if stype in {'jobs/careers','serpapi_jobs','linkedin_signal_feed','manual_feed','linkedin_alert_email','linkedin_evidence_file'} else 88
                   evidence = role_hits[:5] + job_hits[:3]
                   why = 'Een specifieke IT-/data-/architectuurrol wijst concreet op capability-vraag of programma-opbouw.'
                   cgi = 'Business analysis, data transformation, enterprise architecture, POS/ERP/CRM-integratie, delivery squads en managed services.'
@@ -921,7 +2178,7 @@ jobs:
                   return {'published': False, 'reason': 'no concrete IT-landscape signal or qualified retail integration', 'item': x, 'text': text, 'score': 0, 'category': 'Rejected'}
           
               # Score tuning
-              if stype in {'manual_feed','linkedin_signal_feed','linkedin_remote_feed'}: score += 4
+              if stype in {'manual_feed','linkedin_signal_feed','linkedin_remote_feed','linkedin_alert_email','linkedin_evidence_file'}: score += 4
               if stype in {'news/search','jobs/careers'}: score += 2
               if x_age is not None and x_age <= 14: score += 4
               elif x_age is not None and x_age <= 45: score += 2
@@ -931,7 +2188,7 @@ jobs:
               score = max(0, min(99, score))
           
               priority = 'Actie binnen 48 uur' if score >= 90 and directness == 'direct' else ('Review deze week' if directness == 'direct' else 'Valideren deze week')
-              confidence = 'Hoog' if (x_age is not None and x_age <= 30 and stype in {'news/search','jobs/careers','manual_feed','linkedin_signal_feed','linkedin_remote_feed'}) else ('Middel' if x_age is not None or stype == 'jobs/careers' else 'Laag')
+              confidence = 'Hoog' if (x_age is not None and x_age <= 30 and stype in {'news/search','jobs/careers','manual_feed','linkedin_signal_feed','linkedin_remote_feed','linkedin_alert_email','linkedin_evidence_file'}) else ('Middel' if x_age is not None or stype == 'jobs/careers' else 'Laag')
               if score < MIN_SCORE:
                   return {'published': False, 'reason': f'below threshold ({score} < {MIN_SCORE})', 'item': x, 'text': text, 'score': score, 'category': category}
               return {
@@ -1027,10 +2284,14 @@ jobs:
           def run_research():
               watchlist = people_watchlist()
               watchlist_selected = selected_people_for_scan(watchlist)
-              coverage = {'version': VERSION, 'run_at': NOW_LOCAL.strftime('%Y-%m-%d %H:%M %Z'), 'lookback_days': LOOKBACK_DAYS, 'integration_lookback_days': INTEGRATION_LOOKBACK_DAYS, 'min_score': MIN_SCORE, 'accounts_loaded': len(ACCOUNTS), 'providers': {}, 'queries_executed': 0, 'items_retrieved': 0, 'provider_errors': [], 'people_watchlist_loaded': len(watchlist), 'people_watchlist_selected_for_scan': len(watchlist_selected), 'people_watchlist_needs_enrichment': sum(1 for p in watchlist if p.get('needs_enrichment')), 'people_watchlist_api_ready': bool(BRAVE_KEY or TAVILY_KEY), 'people_watchlist_queries_planned': len(build_people_watchlist_queries(watchlist)), 'people_watchlist_queries_executed': 0, 'people_watchlist_items_retrieved': 0, 'config': {
-                  'brave': bool(BRAVE_KEY), 'tavily': bool(TAVILY_KEY), 'serpapi': bool(SERPAPI_KEY), 'rss_fallback': ENABLE_RSS_FALLBACK, 'gdelt': ENABLE_GDELT, 'linkedin_public_index': ENABLE_LINKEDIN_PUBLIC_INDEX, 'deep_scan_mode': DEEP_SCAN_MODE, 'people_watchlist_mode': PEOPLE_WATCHLIST_MODE, 'max_people_watchlist_scans': MAX_PEOPLE_WATCHLIST_SCANS_RAW
+              coverage = {'version': VERSION, 'run_at': NOW_LOCAL.strftime('%Y-%m-%d %H:%M %Z'), 'lookback_days': LOOKBACK_DAYS, 'integration_lookback_days': INTEGRATION_LOOKBACK_DAYS, 'min_score': MIN_SCORE, 'accounts_loaded': len(ACCOUNTS), 'providers': {}, 'queries_executed': 0, 'items_retrieved': 0, 'provider_errors': [], 'people_watchlist_loaded': len(watchlist), 'people_watchlist_selected_for_scan': len(watchlist_selected), 'people_watchlist_needs_enrichment': sum(1 for p in watchlist if p.get('needs_enrichment')), 'people_watchlist_api_ready': bool(BRAVE_KEY or TAVILY_KEY), 'linkedin_alert_mailbox_configured': bool(LINKEDIN_ALERTS_IMAP_HOST and LINKEDIN_ALERTS_IMAP_USER and LINKEDIN_ALERTS_IMAP_PASSWORD), 'people_watchlist_queries_planned': len(build_people_watchlist_queries(watchlist)), 'people_watchlist_queries_executed': 0, 'people_watchlist_items_retrieved': 0, 'config': {
+                  'brave': bool(BRAVE_KEY), 'tavily': bool(TAVILY_KEY), 'serpapi': bool(SERPAPI_KEY), 'rss_fallback': ENABLE_RSS_FALLBACK, 'gdelt': ENABLE_GDELT, 'linkedin_public_index': ENABLE_LINKEDIN_PUBLIC_INDEX, 'linkedin_direct_fetch': ENABLE_LINKEDIN_DIRECT_FETCH, 'deep_scan_mode': DEEP_SCAN_MODE, 'people_watchlist_mode': PEOPLE_WATCHLIST_MODE, 'max_people_watchlist_scans': MAX_PEOPLE_WATCHLIST_SCANS_RAW, 'linkedin_alert_mailbox': bool(LINKEDIN_ALERTS_IMAP_HOST and LINKEDIN_ALERTS_IMAP_USER and LINKEDIN_ALERTS_IMAP_PASSWORD), 'linkedin_evidence_folder': Path('data/linkedin-evidence').exists()
               }}
               all_items = []
+              linkedin_direct_items, linkedin_direct_status = fetch_linkedin_profile_pages(watchlist_selected, coverage)
+              all_items.extend(linkedin_direct_items)
+              if linkedin_direct_items:
+                  coverage['providers']['linkedin_direct_fetch'] = len(linkedin_direct_items)
               queries = build_queries(watchlist)
               for pack, q, kind in queries:
                   coverage['queries_executed'] += 1
@@ -1054,6 +2315,9 @@ jobs:
               manual = manual_items()
               all_items.extend(manual)
               coverage['providers']['manual_and_linkedin_feeds'] = len(manual)
+              coverage['linkedin_alert_email_items'] = sum(1 for x in manual if x.get('provider') == 'linkedin_alert_email')
+              coverage['linkedin_evidence_file_items'] = sum(1 for x in manual if x.get('provider') == 'linkedin_evidence_file')
+              coverage['linkedin_signal_feed_items'] = sum(1 for x in manual if x.get('provider') in {'linkedin_signal_feed','linkedin_remote_feed'})
               coverage['items_retrieved'] = len(all_items)
               all_items = dedupe_items(all_items)
               coverage['items_after_dedupe'] = len(all_items)
@@ -1190,10 +2454,15 @@ jobs:
           def render_html(data):
               data_json = json.dumps(data, ensure_ascii=False).replace('</', '<\\/')
               css = """
-              :root{--red:#e31937;--purple:#5236ab;--black:#000;--white:#fff;--bg:#f6f6f8;--card:#fff;--line:#e3e3ea;--text:#111;--muted:#62626f;--soft-red:#fff0f2;--soft-purple:#f1edff;--shadow:0 16px 45px rgba(0,0,0,.08)}
-              *{box-sizing:border-box} body{margin:0;font-family:Inter,Arial,Helvetica,sans-serif;background:var(--bg);color:var(--text)}
-              .login{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#e31937 0%,#a82465 48%,#5236ab 100%);padding:28px}.login-card{width:min(560px,100%);background:#fff;border-radius:28px;padding:34px;box-shadow:0 32px 90px rgba(0,0,0,.28)}.eyebrow{letter-spacing:.12em;text-transform:uppercase;font-size:12px;font-weight:900;color:var(--purple)}.login h1{font-size:34px;margin:10px 0 8px;line-height:1}.login p{color:#555;line-height:1.45}.login input{width:100%;font-size:18px;padding:15px 16px;border:1px solid #cfcfd8;border-radius:14px;margin-top:18px}.btn{background:var(--red);color:#fff;border:0;border-radius:14px;padding:13px 18px;font-weight:900;cursor:pointer}.login .btn{width:100%;margin-top:12px}.err{color:var(--red);font-weight:800;margin-top:12px;min-height:20px}.app{display:none}
-              .hero{background:#000;color:#fff;padding:30px 32px 26px;position:relative;overflow:hidden}.hero:after{content:"";position:absolute;inset:auto -20% -120px 35%;height:260px;background:linear-gradient(135deg,#e31937,#a82465,#5236ab);filter:blur(5px);opacity:.95;border-radius:50%}.hero-inner{position:relative;z-index:1;display:flex;justify-content:space-between;gap:18px;align-items:flex-end}.hero h1{margin:6px 0 8px;font-size:38px;letter-spacing:-.03em}.hero p{margin:0;color:#ddd;max-width:900px}.runmeta{font-size:13px;color:#ddd;text-align:right;min-width:280px}.stats{display:grid;grid-template-columns:repeat(6,minmax(130px,1fr));gap:14px;margin:-22px 28px 0;position:relative;z-index:3}.stat{background:#fff;border:1px solid var(--line);border-radius:18px;padding:16px;box-shadow:var(--shadow)}.stat b{display:block;font-size:30px;color:var(--purple);letter-spacing:-.03em}.stat span{font-size:12px;text-transform:uppercase;letter-spacing:.07em;font-weight:900;color:#666}.nav{display:flex;gap:8px;padding:20px 28px 0;flex-wrap:wrap}.tab{border:1px solid var(--line);background:#fff;border-radius:999px;padding:10px 15px;cursor:pointer;font-weight:900;color:#333}.tab.active{background:var(--purple);color:#fff;border-color:var(--purple)}.wrap{padding:22px 28px 36px}.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px}.toolbar input,.toolbar select{padding:13px 14px;border:1px solid #ccc;border-radius:12px;background:#fff;min-width:220px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:18px}.card{background:#fff;border:1px solid var(--line);border-radius:22px;padding:18px;box-shadow:0 10px 30px rgba(0,0,0,.05)}.signal{position:relative;overflow:hidden}.signal:before{content:"";position:absolute;left:0;top:0;bottom:0;width:6px;background:var(--red)}.signal.indirect-card:before{background:var(--purple)}.card h3{font-size:19px;line-height:1.25;margin:10px 70px 8px 0}.score{position:absolute;right:16px;top:16px;background:#000;color:#fff;border-radius:16px;padding:10px 12px;font-weight:950;font-size:18px}.pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:900;margin:2px}.pill.direct{background:var(--soft-red);color:#a30017}.pill.indirect{background:var(--soft-purple);color:#32177f}.pill.neutral{background:#f0f0f3;color:#444}.meta{font-size:13px;color:#666;margin:8px 0}.section-title{font-size:11px;font-weight:950;color:var(--purple);text-transform:uppercase;letter-spacing:.09em;margin-top:14px}.small{font-size:13px;color:#444;line-height:1.45}.link{color:var(--purple);font-weight:900;text-decoration:none}.empty{background:#fff;border:2px dashed #d7d7df;border-radius:22px;padding:30px;text-align:center;color:#555}.table{width:100%;border-collapse:collapse;background:#fff;border-radius:18px;overflow:hidden}.table th,.table td{border-bottom:1px solid #eee;text-align:left;padding:12px;font-size:14px;vertical-align:top}.table th{font-size:11px;text-transform:uppercase;color:var(--purple);letter-spacing:.08em}.callout{border-radius:18px;padding:16px;margin-bottom:16px;border:1px solid #ddd;background:#fff}.callout.ok{background:#eefaf1;border-color:#bfe7c5}.callout.warn{background:#fff6e6;border-color:#ffd28a}.callout strong{display:block;margin-bottom:4px}.split{display:grid;grid-template-columns:1.1fr .9fr;gap:18px}.source-list{margin:8px 0 0;padding-left:18px}.source-list li{margin:5px 0;font-size:12px;color:#555}.quality{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:18px}.quality .mini{background:#fff;border:1px solid var(--line);border-radius:18px;padding:14px}.mini b{font-size:22px;color:var(--red)}pre{background:#111;color:#fff;padding:14px;border-radius:14px;overflow:auto}@media(max-width:900px){.hero-inner{display:block}.runmeta{text-align:left;margin-top:12px}.stats{grid-template-columns:repeat(2,1fr);margin-left:16px;margin-right:16px}.wrap,.nav,.hero{padding-left:16px;padding-right:16px}.split{grid-template-columns:1fr}}
+              :root{--red:#e31937;--purple:#5236ab;--black:#050505;--white:#fff;--ink:#141219;--muted:#65606d;--bg:#f6f4f7;--card:#ffffff;--line:#e7e2ea;--soft-red:#fff1f3;--soft-purple:#f3efff;--soft-black:#19151f;--shadow:0 22px 60px rgba(12,8,22,.10);--shadow2:0 10px 30px rgba(12,8,22,.08);--radius:24px}
+              *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:linear-gradient(180deg,#fff 0,#f7f4f8 36%,#f2eff5 100%);color:var(--ink)}
+              .login{min-height:100vh;display:grid;place-items:center;padding:28px;background:radial-gradient(circle at 18% 18%,rgba(227,25,55,.55),transparent 28%),radial-gradient(circle at 80% 35%,rgba(82,54,171,.62),transparent 31%),linear-gradient(135deg,#000 0,#18101f 55%,#000 100%)}
+              .login-card{width:min(620px,100%);background:rgba(255,255,255,.96);border:1px solid rgba(255,255,255,.40);border-radius:34px;padding:42px;box-shadow:0 34px 120px rgba(0,0,0,.42);backdrop-filter:blur(18px)}
+              .eyebrow{letter-spacing:.14em;text-transform:uppercase;font-size:11px;font-weight:950;color:var(--purple)}.login h1{margin:10px 0 10px;font-size:48px;line-height:.96;letter-spacing:-.055em}.login p{margin:0;color:#504a57;line-height:1.58}.login input{width:100%;border:1px solid #d7d2dd;border-radius:18px;padding:16px 18px;margin-top:24px;font-size:17px;outline:none;background:#fff}.login input:focus{border-color:var(--purple);box-shadow:0 0 0 5px rgba(82,54,171,.13)}.btn{border:0;border-radius:16px;background:linear-gradient(135deg,var(--red),#b41457 55%,var(--purple));color:#fff;padding:14px 18px;font-weight:950;cursor:pointer;box-shadow:0 14px 30px rgba(227,25,55,.25);transition:transform .15s ease,box-shadow .15s ease}.btn:hover{transform:translateY(-1px);box-shadow:0 18px 42px rgba(82,54,171,.24)}.login .btn{width:100%;margin-top:12px}.err{color:var(--red);font-weight:850;margin-top:12px;min-height:20px}.app{display:none}
+              .shell{display:grid;grid-template-columns:292px minmax(0,1fr);min-height:100vh}.sidebar{height:100vh;position:sticky;top:0;background:linear-gradient(180deg,#040404 0,#100b16 100%);color:#fff;padding:24px;overflow:auto;border-right:1px solid rgba(255,255,255,.07)}.brandmark{width:54px;height:54px;border-radius:18px;background:linear-gradient(135deg,var(--red),#bb1754 55%,var(--purple));display:grid;place-items:center;font-weight:1000;letter-spacing:-.05em;margin-bottom:20px;box-shadow:0 18px 40px rgba(227,25,55,.22)}.sidebar h2{font-size:24px;letter-spacing:-.045em;margin:0 0 8px}.sidebar p{font-size:13px;line-height:1.55;color:#cec9d4;margin:0 0 24px}.tab{width:100%;display:flex;align-items:center;gap:10px;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.055);color:#fff;border-radius:18px;padding:13px 14px;text-align:left;margin:7px 0;cursor:pointer;font-weight:900;transition:all .15s ease}.tab:hover{background:rgba(255,255,255,.11)}.tab.active{background:#fff;color:#000;border-color:#fff;box-shadow:0 16px 45px rgba(0,0,0,.20)}
+              .content-shell{min-width:0}.hero{position:relative;overflow:hidden;padding:34px 36px 28px;background:linear-gradient(135deg,#fff 0,#fff 48%,#f1edff 76%,#fff1f3 100%);border-bottom:1px solid var(--line)}.hero:before{content:"";position:absolute;right:-100px;top:-120px;width:320px;height:320px;border-radius:50%;background:radial-gradient(circle,rgba(227,25,55,.24),transparent 66%)}.hero-grid{position:relative;display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:22px;align-items:end}.hero h1{margin:6px 0 9px;font-size:46px;line-height:.98;letter-spacing:-.055em}.hero p{margin:0;color:#514b58;line-height:1.54;max-width:960px}.runmeta{background:rgba(255,255,255,.86);border:1px solid var(--line);border-radius:20px;padding:14px 16px;box-shadow:var(--shadow2);font-size:12px;color:#57515e;text-align:right}.stats{display:grid;grid-template-columns:repeat(6,minmax(130px,1fr));gap:14px;padding:22px 36px 0}.stat{background:rgba(255,255,255,.94);border:1px solid var(--line);border-radius:22px;padding:17px;box-shadow:var(--shadow2)}.stat b{display:block;font-size:32px;line-height:1;color:var(--purple);letter-spacing:-.05em}.stat span{display:block;margin-top:7px;font-size:10px;text-transform:uppercase;letter-spacing:.09em;font-weight:950;color:#6b6572}.wrap{padding:24px 36px 44px}
+              .toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px}.toolbar input,.toolbar select{padding:13px 14px;border:1px solid #d7d2dd;border-radius:16px;background:#fff;min-width:225px;box-shadow:0 8px 22px rgba(12,8,22,.04);outline:none}.toolbar input:focus,.toolbar select:focus{border-color:var(--purple);box-shadow:0 0 0 4px rgba(82,54,171,.10)}.quality{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:18px}.mini{background:#fff;border:1px solid var(--line);border-radius:20px;padding:15px 16px;box-shadow:var(--shadow2);color:#5f5966}.mini b{font-size:26px;color:var(--ink);letter-spacing:-.045em}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(410px,1fr));gap:18px}.card{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow)}.signal{position:relative;overflow:hidden;padding-top:18px}.signal:before{content:"";position:absolute;left:0;top:0;bottom:0;width:7px;background:linear-gradient(180deg,var(--red),#b41457)}.signal.indirect-card:before{background:linear-gradient(180deg,var(--purple),#2f1a7a)}.card h3{font-size:19px;line-height:1.28;margin:12px 80px 8px 0;letter-spacing:-.018em}.score{position:absolute;right:16px;top:16px;background:#050505;color:#fff;border-radius:18px;padding:11px 13px;font-size:18px;font-weight:1000;box-shadow:0 14px 30px rgba(0,0,0,.18)}.pill{display:inline-flex;align-items:center;border-radius:999px;padding:6px 10px;margin:2px;font-size:11px;font-weight:950}.pill.direct{background:var(--soft-red);color:#9a0015}.pill.indirect{background:var(--soft-purple);color:#301277}.pill.neutral{background:#f1f0f4;color:#403a46}.meta{font-size:13px;color:#675f6d;margin:8px 0}.section-title{font-size:10px;font-weight:1000;text-transform:uppercase;letter-spacing:.12em;color:var(--purple);margin-top:15px}.small{font-size:13px;color:#45404c;line-height:1.52}.link{color:var(--purple);font-weight:950;text-decoration:none}.link:hover{text-decoration:underline}.empty{background:#fff;border:2px dashed #d8d3df;border-radius:24px;padding:40px;text-align:center;color:#58525f}.table{width:100%;border-collapse:separate;border-spacing:0;background:#fff;border:1px solid var(--line);border-radius:20px;overflow:hidden;box-shadow:var(--shadow2)}.table th{background:#faf8fb;color:#4e4856;font-size:11px;text-transform:uppercase;letter-spacing:.08em;text-align:left}.table th,.table td{padding:12px 13px;border-bottom:1px solid #eeeaf1;vertical-align:top}.table tr:last-child td{border-bottom:0}.split{display:grid;grid-template-columns:1.15fr .85fr;gap:18px}.callout{border-radius:22px;padding:17px 18px;margin-bottom:18px;border:1px solid var(--line);box-shadow:var(--shadow2);background:#fff}.callout strong{display:block;margin-bottom:5px}.callout.ok{border-left:6px solid var(--purple)}.callout.warn{border-left:6px solid #eaa300}.callout.danger{border-left:6px solid var(--red)}.status-ok{color:#116b34;font-weight:950}.status-warn{color:#9b6500;font-weight:950}.status-bad{color:#9a0015;font-weight:950}.source-list{padding-left:19px;margin:6px 0 0}.source-list li{margin:6px 0;color:#4f4855}.source-list small{color:#7a7280}pre{white-space:pre-wrap;background:#0f0c14;color:#fff;border-radius:18px;padding:16px;overflow:auto}.badgebar{display:flex;gap:6px;flex-wrap:wrap}@media(max-width:1100px){.shell{grid-template-columns:1fr}.sidebar{position:relative;height:auto}.hero-grid{grid-template-columns:1fr}.runmeta{text-align:left}.stats{grid-template-columns:repeat(2,1fr)}.split{grid-template-columns:1fr}.grid{grid-template-columns:1fr}}@media(max-width:700px){.login-card{padding:28px}.login h1,.hero h1{font-size:34px}.stats{grid-template-columns:1fr}.wrap,.hero,.stats{padding-left:18px;padding-right:18px}.grid{grid-template-columns:1fr}.card h3{margin-right:0}.score{position:relative;right:auto;top:auto;display:inline-block;margin-bottom:8px}}
+
               """
               js = """
               const LOGIN_CODE='BD_Signal_26!';
@@ -1210,21 +2479,28 @@ jobs:
               function card(s){let supp=(s.supporting_sources||[]).slice(0,5).map(x=>`<li><a class="link" target="_blank" href="${esc(x.url)}">${esc(x.source||'bron')}</a> — ${esc(x.title||'')}</li>`).join('');return `<div class="card signal ${s.directness==='indirect'?'indirect-card':''}"><div class="score">${s.score}</div><span class="pill ${s.directness}">${esc(s.directness)}</span><span class="pill neutral">${esc(s.priority)}</span><span class="pill neutral">${esc(s.shelf_life||'')}</span><h3>${esc(s.company)} — ${esc(s.title)}</h3><div class="meta">${esc(s.source_type)} · ${esc(s.source)} · ${esc(s.published_at)} · ${s.age_days??'?'} dagen oud</div><div class="small">Matched alias: <b>${esc(s.matched_alias)}</b> · ${s.supporting_count?`+${s.supporting_count} vergelijkbare bronnen geclusterd`: 'unieke bron'}</div><div class="section-title">Bewijs</div><div>${(s.evidence_hits||[]).map(e=>'<span class="pill neutral">'+esc(e)+'</span>').join('')}</div><div class="section-title">Waarom relevant voor CGI</div><div class="small">${esc(s.why)}</div><div class="section-title">CGI-angle</div><div class="small">${esc(s.cgi_angle)}</div><div class="section-title">Actie</div><div class="small">${esc(s.action)}</div>${supp?`<div class="section-title">Samengevoegde bronnen</div><ul class="source-list">${supp}</ul>`:''}<div style="margin-top:14px"><a class="link" target="_blank" href="${esc(s.url)}">Open primaire bron</a></div></div>`;}
               function renderCoverage(){const c=DATA.coverage||{}, providers=c.providers||{}, cfg=c.config||{};document.getElementById('content').innerHTML=`<div class="split"><div><div class="callout ok"><strong>Quality gates actief</strong>Oude archive-items, Wikipedia, productpagina's, folders, consumentencontent, financiële-only items en single-store overnames worden geblokkeerd. CIO/CTO/CDO-signalen hebben een langere shelf-life dan gewone nieuwsitems.</div><div class="card"><h3>Providerdekking</h3><table class="table"><tbody>${Object.entries(providers).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join('')}</tbody></table></div></div><div><div class="card"><h3>Config</h3><table class="table"><tbody>${Object.entries(cfg).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')}</tbody></table></div></div></div><div class="card" style="margin-top:18px"><h3>Waarom items zijn afgewezen</h3><table class="table"><tbody>${(c.reject_reasons||[]).map(r=>`<tr><td>${esc(r[0])}</td><td>${r[1]}</td></tr>`).join('')}</tbody></table></div>`;}
               function renderRejected(){document.getElementById('content').innerHTML=`<table class="table"><thead><tr><th>Titel</th><th>Bron</th><th>Datum</th><th>Reden</th><th>Query</th></tr></thead><tbody>${DATA.rejected.map(r=>`<tr><td>${esc(r.title)}</td><td>${esc(r.source)}<br><a class="link" href="${esc(r.url)}" target="_blank">open</a></td><td>${esc(r.published_at)}<br>${r.age_days??'?'} dagen</td><td>${esc(r.reason)}</td><td>${esc(r.query_pack)}<br><span class="small">${esc(r.query)}</span></td></tr>`).join('')}</tbody></table>`;}
-              function renderPeople(){const c=DATA.coverage||{};let status=c.people_watchlist_api_ready?'ok':'warn';document.getElementById('content').innerHTML=`<div class="callout ${status}"><strong>LinkedIn URL watchlist scan</strong>${c.people_watchlist_api_ready?'De watchlist-URL’s worden in deze run als search-seeds gebruikt via Brave/Tavily.':'Er zijn LinkedIn URL’s ingelezen, maar zonder BRAVE_SEARCH_API_KEY of TAVILY_API_KEY kan GitHub Actions ze niet via websearch verrijken.'}</div><div class="quality"><div class="mini"><b>${c.people_watchlist_loaded||0}</b><br>URL’s ingelezen</div><div class="mini"><b>${c.people_watchlist_selected_for_scan||0}</b><br>profielen geselecteerd</div><div class="mini"><b>${c.people_watchlist_queries_planned||0}</b><br>queries gepland</div><div class="mini"><b>${c.people_watchlist_queries_executed||0}</b><br>queries uitgevoerd</div><div class="mini"><b>${c.people_watchlist_items_retrieved||0}</b><br>items opgehaald</div></div><h3>Watchlist geselecteerd voor deze run</h3><table class="table"><thead><tr><th>Naam</th><th>Bedrijf</th><th>Rol</th><th>LinkedIn</th><th>Status</th></tr></thead><tbody>${(DATA.watchlist_selected||[]).map(p=>`<tr><td>${esc(p.name||'')}</td><td>${esc(p.company||'')}</td><td>${esc(p.role||'')}</td><td><a class="link" href="${esc(p.linkedin_url||'')}" target="_blank">open</a></td><td>${p.needs_enrichment?'URL-only: naam/bedrijf/rol verrijken':'verrijkt'}</td></tr>`).join('')||'<tr><td>Geen profielen geselecteerd.</td></tr>'}</tbody></table><h3>People candidates uit publieke index</h3><table class="table"><tbody>${DATA.people.map(p=>`<tr><td>${esc(p.title)}</td><td>${esc(p.source)}<br><a class="link" href="${esc(p.url)}" target="_blank">open</a></td><td>${esc((p.role_hits||[]).join(', '))}</td><td>${esc((p.matched_companies||[]).map(m=>m.name).join(', '))}</td></tr>`).join('')||'<tr><td>Geen people candidates gevonden.</td></tr>'}</tbody></table>`;}
-              function renderSetup(){document.getElementById('content').innerHTML=`<div class="card"><h3>Aanbevolen setup voor optimale resultaten</h3><p>Gebruik minimaal Tavily of Brave voor people-watchlist scans; SerpAPI is vooral nuttig voor vacatures.</p><pre>BRAVE_SEARCH_API_KEY
+              function renderPeople(){const c=DATA.coverage||{};const mailbox=c.linkedin_alert_mailbox_configured;const feed=(c.linkedin_signal_feed_items||0)>0;const evidence=(c.linkedin_evidence_file_items||0)>0;const searchReady=c.people_watchlist_api_ready;const directFetch=c.linkedin_direct_fetch_enabled;let cls=(c.linkedin_direct_fetch_attempted||0)>0?'ok':(searchReady?'warn':'danger');let msg=`De radar gebruikt de LinkedIn URL's nu als echte scanlijst: per URL wordt een publieke profiel-fetch geprobeerd en daarnaast worden zoekqueries rond de exacte profielslug/naam gebouwd. Als LinkedIn een loginwall geeft, zie je dat hier per profiel terug; er wordt dan niets verzonnen.`;document.getElementById('content').innerHTML=`<div class="callout ${cls}"><strong>LinkedIn URL-scan status</strong>${msg}</div><div class="quality"><div class="mini"><b>${c.people_watchlist_loaded||0}</b><br>watchlist URL’s</div><div class="mini"><b>${c.linkedin_alert_email_items||0}</b><br>alert-mails verwerkt</div><div class="mini"><b>${c.linkedin_signal_feed_items||0}</b><br>feeditems verwerkt</div><div class="mini"><b>${c.linkedin_evidence_file_items||0}</b><br>evidence-bestanden</div><div class="mini"><b>${c.people_watchlist_queries_executed||0}</b><br>search queries</div><div class="mini"><b>${c.linkedin_direct_fetch_attempted||0}</b><br>profielen geopend</div><div class="mini"><b>${c.linkedin_direct_fetch_accessible||0}</b><br>publiek gelezen</div><div class="mini"><b>${c.linkedin_direct_fetch_blocked||0}</b><br>loginwall/fout</div></div><div class="split"><div class="card"><h3>Wat werkt betrouwbaar?</h3><table class="table"><tbody><tr><td>Sales Navigator / LinkedIn alert mailbox</td><td class="${mailbox?'status-ok':'status-bad'}">${mailbox?'verbonden':'niet verbonden'}</td></tr><tr><td>data/linkedin-signals.csv</td><td class="${feed?'status-ok':'status-warn'}">${feed?'items gevonden':'geen items'}</td></tr><tr><td>data/linkedin-evidence/</td><td class="${evidence?'status-ok':'status-warn'}">${evidence?'bestanden gevonden':'geen bestanden'}</td></tr><tr><td>Directe publieke profiel-fetch per URL</td><td class="${directFetch?'status-ok':'status-bad'}">${directFetch?'actief':'uit'}</td></tr><tr><td>URL watchlist via search API</td><td class="${searchReady?'status-ok':'status-warn'}">${searchReady?'actief via Tavily/Brave':'geen Tavily/Brave'}</td></tr></tbody></table></div><div class="card"><h3>Wat er technisch gebeurt</h3><p class="small">De YAML probeert elke URL in de watchlist publiek te openen, registreert of LinkedIn de pagina toont of blokkeert, en voert daarnaast zoekqueries uit op profielslug en naam. Alleen concrete IT-, hiring-, leadership- of transformatietaal mag een signaal worden.</p></div></div><h3>Watchlist geselecteerd voor deze run</h3><table class="table"><thead><tr><th>Naam</th><th>Bedrijf</th><th>Rol</th><th>LinkedIn</th><th>Status</th></tr></thead><tbody>${(DATA.watchlist_selected||[]).map(p=>`<tr><td>${esc(p.name||'')}</td><td>${esc(p.company||'')}</td><td>${esc(p.role||'')}</td><td><a class="link" href="${esc(p.linkedin_url||'')}" target="_blank">open</a></td><td>${p.needs_enrichment?'URL-only: verrijken met bedrijf/rol':'verrijkt'}</td></tr>`).join('')||'<tr><td>Geen profielen geselecteerd.</td></tr>'}</tbody></table><h3>LinkedIn profiel-fetch status</h3><table class="table"><thead><tr><th>Naam</th><th>Status</th><th>HTTP</th><th>Snippet</th></tr></thead><tbody>${(c.linkedin_direct_fetch_status_rows||[]).map(r=>`<tr><td>${esc(r.name||'')}</td><td>${esc(r.status||'')}</td><td>${esc(String(r.http_status||''))}</td><td class="small">${esc(r.snippet||'')}</td></tr>`).join('')||'<tr><td>Geen directe LinkedIn fetches uitgevoerd.</td></tr>'}</tbody></table><h3>People candidates uit publieke index</h3><table class="table"><tbody>${DATA.people.map(p=>`<tr><td>${esc(p.title)}</td><td>${esc(p.source)}<br><a class="link" href="${esc(p.url)}" target="_blank">open</a></td><td>${esc((p.role_hits||[]).join(', '))}</td><td>${esc((p.matched_companies||[]).map(m=>m.name).join(', '))}</td></tr>`).join('')||'<tr><td>Geen people candidates gevonden.</td></tr>'}</tbody></table>`;}
+              function renderSetup(){document.getElementById('content').innerHTML=`<div class="card"><h3>One-YAML setup</h3><p>Geen extra uploads nodig. De workflow werkt met ingebouwde bedrijvenlijst, automatische LinkedIn discovery en een optioneel inline LinkedIn URL-block in deze YAML. API keys verbeteren de dekking, maar losse CSV-bestanden zijn optioneel.</p><pre>BRAVE_SEARCH_API_KEY
           TAVILY_API_KEY
           SERPAPI_API_KEY
-          LINKEDIN_SIGNAL_FEED_URL</pre><h3>Workflow-instellingen</h3><pre>people_watchlist_mode = all
+          LINKEDIN_SIGNAL_FEED_URL
+          LINKEDIN_ALERTS_IMAP_HOST
+          LINKEDIN_ALERTS_IMAP_PORT
+          LINKEDIN_ALERTS_IMAP_USER
+          LINKEDIN_ALERTS_IMAP_PASSWORD
+          LINKEDIN_ALERTS_IMAP_FOLDER</pre><h3>Workflow-instellingen</h3><pre>people_watchlist_mode = all
           max_people_watchlist_scans = ALL
-          max_queries = 2200
+          max_queries = 3200
           leadership_lookback_days = 210
           program_lookback_days = 180
-          integration_lookback_days = 180</pre><h3>Bestanden</h3><pre>data/people-watchlist.csv       # mag alleen kolom 'Linkedin URL' bevatten
+          integration_lookback_days = 180</pre><h3>Bestanden</h3><pre>Geen upload nodig: plak URL's in het INLINE_LINKEDIN_URLS_RAW block in deze YAML of run handmatig met linkedin_watchlist_inline.
+          data/people-watchlist.csv       # optioneel, mag alleen kolom 'Linkedin URL' bevatten
           data/linkedin-signals.csv       # concrete LinkedIn-posts / Sales Navigator-observaties
+          data/linkedin-evidence/         # .txt/.html bestanden met door jou vastgelegde LinkedIn evidence
           data/manual-signals.csv         # handmatig gevalideerde signalen
           data/companies.txt              # extra aliases/accounts</pre></div>`;}
               """.replace('__DATA__', data_json)
-              html_doc = f"""<!doctype html><html lang='nl'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>CGI Retail IT Signal Radar</title><style>{css}</style></head><body><div class='login'><div class='login-card'><div class='eyebrow'>CGI Business Development</div><h1>Retail IT Signal Radar</h1><p>Dagelijkse radar voor IT-landschap-signalen, IT-beslissers en gekwalificeerde formule-/ketenintegraties.</p><input id='pw' type='password' placeholder='Login code'><button class='btn' onclick='go()'>Open radar</button><div id='err' class='err'></div></div></div><div class='app'><div class='hero'><div class='hero-inner'><div><div class='eyebrow'>CGI Retail & Consumer Services</div><h1>Opportunity Signal Board</h1><p>Weinig signalen, hoge kwaliteit: alleen IT-landschap, IT-capability, IT-leadership, platformkeuze, tender/security of gekwalificeerde retailintegratie.</p></div><div id='runmeta' class='runmeta'></div></div></div><div id='stats' class='stats'></div><div class='nav'><button class='tab active' data-tab='signals' onclick="tab('signals')">Signal board</button><button class='tab' data-tab='coverage' onclick="tab('coverage')">Coverage</button><button class='tab' data-tab='rejected' onclick="tab('rejected')">Afgewezen/Archive</button><button class='tab' data-tab='people' onclick="tab('people')">LinkedIn watchlist</button><button class='tab' data-tab='setup' onclick="tab('setup')">Setup</button></div><div class='wrap'><div id='content'></div></div></div><script>{js}</script></body></html>"""
+              html_doc = f"""<!doctype html><html lang='nl'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>CGI Retail IT Signal Radar</title><style>{css}</style></head><body><div class='login'><div class='login-card'><div class='eyebrow'>CGI Business Development</div><h1>Retail IT Signal Radar</h1><p>Dagelijkse radar voor IT-landschap-signalen, IT-beslissers en gekwalificeerde formule-/ketenintegraties.</p><input id='pw' type='password' placeholder='Login code'><button class='btn' onclick='go()'>Open radar</button><div id='err' class='err'></div></div></div><div class='app'><div class='shell'><aside class='sidebar'><div class='brandmark'>CGI</div><h2>Signal Radar</h2><p>Retail & Consumer Services. Alleen concrete IT-landschap-, hiring-, leadership- en integratiesignalen.</p><button class='tab active' data-tab='signals' onclick="tab('signals')">Signal board</button><button class='tab' data-tab='coverage' onclick="tab('coverage')">Coverage & kwaliteit</button><button class='tab' data-tab='rejected' onclick="tab('rejected')">Afgewezen / archive</button><button class='tab' data-tab='people' onclick="tab('people')">LinkedIn evidence</button><button class='tab' data-tab='setup' onclick="tab('setup')">Setup</button></aside><main class='content-shell'><div class='hero'><div class='hero-grid'><div><div class='eyebrow'>CGI Retail & Consumer Services</div><h1>Opportunity Signal Board</h1><p>Dagelijkse one-YAML research op harde IT-signalen: leadership, Business Analyst/data/POS/ERP-vacatures, platformkeuzes, tenders, security-events en gekwalificeerde retailintegraties.</p></div><div id='runmeta' class='runmeta'></div></div></div><div id='stats' class='stats'></div><div class='wrap'><div id='content'></div></div></main></div></div><script>{js}</script></body></html>"""
               return html_doc
           
           def main():
@@ -1248,6 +2524,16 @@ jobs:
       - name: Build dashboard
         shell: bash
         run: python radar.py
+
+      - name: Commit persisted LinkedIn watchlist
+        if: ${{ github.event.inputs.linkedin_watchlist_inline != '' }}
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .radar/linkedin-watchlist.txt
+          git commit -m "Persist LinkedIn watchlist for signal radar" || echo "No watchlist changes"
+          git push || echo "Push skipped"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
